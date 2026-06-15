@@ -1,0 +1,7 @@
+node_modules/
+.env
+data/cache/
+data/downloaded.xml
+data/failed_downloads.json
+design
+Initial Plan
