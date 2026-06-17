@@ -29,7 +29,8 @@ const HOST_PRIORITY_PATTERNS = [
   /akirabox\.com|akia/i,
   /vikingfile\.com|viki/i,
   /mega\.nz|mega\.co\.nz/i,
-  /rootz\.so/i
+  /rootz\.so/i,
+  /buzzheavier\.com|buznew/i
 ];
 
 function getHostPriority(url) {
@@ -46,14 +47,29 @@ function getHostNameFromUrl(url) {
   if (/vikingfile\.com|viki/i.test(url)) return 'Viki';
   if (/mega\.nz|mega\.co\.nz/i.test(url)) return 'Mega';
   if (/rootz\.so/i.test(url)) return 'Rootz';
+  if (/buzzheavier\.com/i.test(url)) return 'Buznew';
   return 'Other';
 }
 
 /**
- * Decodes base64 payload and extracts password and direct/reroute links.
+ * Detects type of file from paragraph text, url, or label
+ */
+function detectTypeFromText(text, url = '', label = '') {
+  const lower = (text + ' ' + url + ' ' + label).toLowerCase();
+  if (lower.includes('unlock')) return 'UNLOCK';
+  if (lower.includes('dlc')) return 'DLC';
+  if (lower.includes('backport') || lower.match(/_?([4-9])xx/i) || lower.match(/([4-9])\.xx/i)) return 'BACKPORT';
+  if (lower.includes('patch') || lower.includes('update') || lower.includes('fix')) return 'UPDATE';
+  if (lower.includes('guide') || lower.includes('readme') || lower.includes('instruction')) return 'INSTALL_GUIDE';
+  if (lower.includes('game')) return 'GAME';
+  return 'GAME';
+}
+
+/**
+ * Decodes base64 payload and extracts password and direct/reroute links grouped by paragraph/block.
  * 
  * @param {string} base64Payload 
- * @returns {{directLinks: Array<{label: string, url: string}>, rerouteLinks: Array<{label: string, url: string}>, password: string}}
+ * @returns {{groups: Array<{type: string, links: Array<{label: string, url: string}>}>, password: string}}
  */
 function decodeAndExtractLinks(base64Payload) {
   const decoded = Buffer.from(base64Payload, 'base64').toString('utf-8');
@@ -65,9 +81,7 @@ function decodeAndExtractLinks(base64Payload) {
       const urls = data.URLS || data.urls || [];
       const password = data.Password || data.password || '';
       
-      const directLinks = [];
-      const rerouteLinks = [];
-      
+      const groups = [];
       for (const url of urls) {
         let trimmedUrl = (url || '').trim();
         // Decode shorteners / click bypasses (e.g. clk.sh) containing base64 URL param
@@ -86,15 +100,15 @@ function decodeAndExtractLinks(base64Payload) {
         }
         
         if (trimmedUrl && !EXCLUDED_DOMAINS.some(domain => trimmedUrl.includes(domain))) {
-          if (trimmedUrl.includes(REROUTE_DOMAIN)) {
-            rerouteLinks.push({ label: 'Link', url: trimmedUrl });
-          } else {
-            directLinks.push({ label: 'Link', url: trimmedUrl });
-          }
+          const type = detectTypeFromText('', trimmedUrl, '');
+          groups.push({
+            type,
+            links: [{ label: 'Link', url: trimmedUrl }]
+          });
         }
       }
       
-      return { directLinks, rerouteLinks, password };
+      return { groups, password };
     }
   } catch (err) {
     // Parsing failed, proceed with Cheerio HTML parsing
@@ -106,36 +120,90 @@ function decodeAndExtractLinks(base64Payload) {
   const passwordMatch = $.text().match(/Password:\s*([^\s<]+)/i);
   const password = passwordMatch ? passwordMatch[1].trim() : '';
 
-  const links = [];
-  $('a[href]').each((_, el) => {
-    let url = ($(el).attr('href') || '').trim();
-    const label = $(el).text().trim() || 'Link';
-    
-    // Decode shorteners / click bypasses (e.g. clk.sh) containing base64 URL param
-    if (url.includes('url=')) {
-      const urlMatch = url.match(/[?&]url=([^&]+)/);
-      if (urlMatch) {
-        try {
-          const decodedUrl = Buffer.from(decodeURIComponent(urlMatch[1]), 'base64').toString('utf-8');
-          if (decodedUrl.startsWith('http')) {
-            url = decodedUrl;
+  const groups = [];
+
+  // Group by paragraphs (<p>), list items (<li>), or divs if they contain links
+  $('p, li').each((_, blockEl) => {
+    const blockText = $(blockEl).clone().children('a').remove().end().text().trim();
+    const blockLinks = [];
+    $(blockEl).find('a').each((_, el) => {
+      let url = ($(el).attr('href') || '').trim();
+      const dataDomain = ($(el).attr('data-domain') || '').trim();
+      const dataPath = ($(el).attr('data-path') || '').trim();
+      
+      if (dataDomain && dataPath) {
+        url = dataDomain + dataPath;
+      }
+      
+      const label = $(el).text().trim() || 'Link';
+      
+      // Decode shorteners / click bypasses (e.g. clk.sh) containing base64 URL param
+      if (url.includes('url=')) {
+        const urlMatch = url.match(/[?&]url=([^&]+)/);
+        if (urlMatch) {
+          try {
+            const decodedUrl = Buffer.from(decodeURIComponent(urlMatch[1]), 'base64').toString('utf-8');
+            if (decodedUrl.startsWith('http')) {
+              url = decodedUrl;
+            }
+          } catch (e) {
+            // ignore
           }
-        } catch (e) {
-          // ignore
         }
       }
-    }
 
-    // Filter out help guides and tools
-    if (url && !EXCLUDED_DOMAINS.some(domain => url.includes(domain))) {
-      links.push({ label, url });
+      // Filter out help guides and tools
+      if (url && !EXCLUDED_DOMAINS.some(domain => url.includes(domain))) {
+        blockLinks.push({ label, url });
+      }
+    });
+
+    if (blockLinks.length > 0) {
+      const type = detectTypeFromText(blockText || $(blockEl).text());
+      groups.push({ type, links: blockLinks });
     }
   });
 
-  const rerouteLinks = links.filter(l => l.url.includes(REROUTE_DOMAIN));
-  const directLinks = links.filter(l => !l.url.includes(REROUTE_DOMAIN));
+  // Fallback: if no groups were found (flat structure)
+  if (groups.length === 0) {
+    const flatLinks = [];
+    $('a').each((_, el) => {
+      let url = ($(el).attr('href') || '').trim();
+      const dataDomain = ($(el).attr('data-domain') || '').trim();
+      const dataPath = ($(el).attr('data-path') || '').trim();
+      
+      if (dataDomain && dataPath) {
+        url = dataDomain + dataPath;
+      }
+      
+      const label = $(el).text().trim() || 'Link';
+      
+      if (url.includes('url=')) {
+        const urlMatch = url.match(/[?&]url=([^&]+)/);
+        if (urlMatch) {
+          try {
+            const decodedUrl = Buffer.from(decodeURIComponent(urlMatch[1]), 'base64').toString('utf-8');
+            if (decodedUrl.startsWith('http')) {
+              url = decodedUrl;
+            }
+          } catch (e) {
+            // ignore
+          }
+        }
+      }
 
-  return { directLinks, rerouteLinks, password };
+      if (url && !EXCLUDED_DOMAINS.some(domain => url.includes(domain))) {
+        flatLinks.push({ label, url });
+      }
+    });
+
+    if (flatLinks.length > 0) {
+      const type = detectTypeFromText('');
+      groups.push({ type, links: flatLinks });
+    }
+  }
+
+  return { groups, password };
 }
 
 /**
@@ -144,7 +212,7 @@ function decodeAndExtractLinks(base64Payload) {
  * 
  * @param {Array<{ppsa: string, region: string, base64Payload: string}>} sections
  * @param {string} targetPPSA
- * @returns {Promise<{urls: string[], password: string, region: string, hostName: string}>}
+ * @returns {Promise<{urls: string[], urlInfo: Array<{url: string, type: string}>, password: string, region: string, hostName: string}>}
  */
 async function getBestDownloadLinks(sections, targetPPSA) {
   // 1. Filter sections matching targetPPSA (if targetPPSA is specified)
@@ -164,11 +232,23 @@ async function getBestDownloadLinks(sections, targetPPSA) {
   // Try each region section in order of priority (in case of failure to extract/resolve)
   for (const section of matchingSections) {
     try {
-      const { directLinks, rerouteLinks, password } = decodeAndExtractLinks(section.base64Payload);
-      let candidates = [...directLinks];
+      const { groups, password } = decodeAndExtractLinks(section.base64Payload);
+      
+      let finalUrls = [];
+      let finalUrlInfos = [];
+      let selectedHostNames = new Set();
 
-      // Resolve reroute URLs if present
-      if (rerouteLinks.length > 0) {
+      // Resolve and select links for each group (asset) independently
+      for (const group of groups) {
+        let candidates = [];
+
+        const directLinks = group.links.filter(l => !l.url.includes(REROUTE_DOMAIN));
+        const rerouteLinks = group.links.filter(l => l.url.includes(REROUTE_DOMAIN));
+
+        // Add direct links as candidates
+        candidates = candidates.concat(directLinks);
+
+        // Resolve reroute URLs
         for (const reroute of rerouteLinks) {
           try {
             const resolved = await resolveReroute(reroute.url);
@@ -177,40 +257,73 @@ async function getBestDownloadLinks(sections, targetPPSA) {
             // Ignore reroute resolution failure
           }
         }
+
+        // Filter candidates to only allow valid download hosts or text guides
+        const allowedCandidates = candidates.filter(cand => {
+          return cand.url.startsWith('text_guide:') || getHostPriority(cand.url) < HOST_PRIORITY_PATTERNS.length;
+        });
+
+        if (allowedCandidates.length === 0) {
+          continue;
+        }
+
+        const textGuides = allowedCandidates.filter(cand => cand.url.startsWith('text_guide:'));
+        const downloadCandidates = allowedCandidates.filter(cand => !cand.url.startsWith('text_guide:'));
+
+        // If there are download candidates, select the best host for this asset group
+        if (downloadCandidates.length > 0) {
+          const groupedByHost = {};
+          for (const cand of downloadCandidates) {
+            const priorityIndex = getHostPriority(cand.url);
+            if (!groupedByHost[priorityIndex]) {
+              groupedByHost[priorityIndex] = [];
+            }
+            if (!groupedByHost[priorityIndex].includes(cand.url)) {
+              groupedByHost[priorityIndex].push(cand.url);
+            }
+          }
+
+          const sortedHostKeys = Object.keys(groupedByHost).map(Number).sort((a, b) => a - b);
+          if (sortedHostKeys.length > 0) {
+            const bestHostIndex = sortedHostKeys[0];
+            const bestUrls = groupedByHost[bestHostIndex];
+            
+            for (const url of bestUrls) {
+              if (!finalUrls.includes(url)) {
+                finalUrls.push(url);
+                finalUrlInfos.push({ url, type: group.type });
+                selectedHostNames.add(getHostNameFromUrl(url));
+              }
+            }
+          }
+        }
+
+        // Add text guides
+        for (const tg of textGuides) {
+          if (!finalUrls.includes(tg.url)) {
+            finalUrls.push(tg.url);
+            finalUrlInfos.push({ url: tg.url, type: 'INSTALL_GUIDE' });
+          }
+        }
       }
 
-      if (candidates.length === 0) {
+      if (finalUrls.length === 0) {
         continue;
       }
 
-      // Group candidates by host name priority
-      const groupedByHost = {};
-      for (const cand of candidates) {
-        const priorityIndex = getHostPriority(cand.url);
-        if (!groupedByHost[priorityIndex]) {
-          groupedByHost[priorityIndex] = [];
-        }
-        // Avoid duplicate links
-        if (!groupedByHost[priorityIndex].includes(cand.url)) {
-          groupedByHost[priorityIndex].push(cand.url);
-        }
-      }
+      // Determine the primary host name for display/logging
+      // If we have 1fichier, use that; otherwise first available
+      const hostList = Array.from(selectedHostNames);
+      const hostName = hostList.includes('1fichier') ? '1fichier' : (hostList[0] || 'Other');
 
-      // Find highest priority host that has links
-      const sortedHostKeys = Object.keys(groupedByHost).map(Number).sort((a, b) => a - b);
-      if (sortedHostKeys.length > 0) {
-        const bestHostIndex = sortedHostKeys[0];
-        const bestUrls = groupedByHost[bestHostIndex];
-        const hostName = getHostNameFromUrl(bestUrls[0]);
-
-        return {
-          urls: bestUrls,
-          password,
-          region: section.region,
-          hostName,
-          ppsa: section.ppsa
-        };
-      }
+      return {
+        urls: finalUrls,
+        urlInfo: finalUrlInfos,
+        password,
+        region: section.region,
+        hostName,
+        ppsa: section.ppsa
+      };
     } catch (err) {
       // Try next region section
     }

@@ -26,6 +26,7 @@ program
   .command('download')
   .argument('[title]', 'Title of the game to download')
   .option('-l, --limit <number>', 'Batch download first N games from TBD list')
+  .option('-t, --type <string>', 'Download only specific file types (e.g. GAME, DLC, BACKPORT, UPDATE)')
   .description('Download a specific game or a batch of games from TBD list')
   .action((title, options) => {
     downloadCommand(title, options);
