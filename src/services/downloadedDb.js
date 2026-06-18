@@ -88,7 +88,13 @@ function addDownloadedGame({ title, fileName, ppsa, password, source, region }) 
   const games = loadDownloadedGames();
   
   // Prevent duplicate logs for the same game PPSA and region
-  const exists = games.some(g => g.ppsa === ppsa && g.region === region);
+  // If PPSA is Unknown, check if the title already exists to prevent duplicates.
+  const exists = games.some(g => {
+    if (ppsa && ppsa !== 'Unknown' && g.ppsa && g.ppsa !== 'Unknown') {
+      return g.ppsa === ppsa && g.region === region;
+    }
+    return normalizeTitle(g.title) === normalizeTitle(title);
+  });
   if (exists) return;
 
   games.push({

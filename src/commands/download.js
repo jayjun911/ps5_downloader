@@ -1,11 +1,11 @@
 const { loadLocalLibrary } = require('../services/localLibrary');
-const { loadDownloadedGames, addDownloadedGame } = require('../services/downloadedDb');
+const { loadDownloadedGames } = require('../services/downloadedDb');
 const { getWebGameList, findGameInWebList, getGameSubpageData } = require('../services/webScraper');
 const { getBestDownloadLinks, getRegionPriority } = require('../services/linkExtractor');
 const { download1fichier } = require('../services/fichierDownloader');
+const { downloadFromDatanodes } = require('../services/datanodesDownloader');
 const { extractVersion } = require('../utils/versionParser');
-const { convertToFfpfsc } = require('../services/converter');
-const { isArchiveEncrypted, extractRarArchive, getGameInfoFromArchive, compressFolderToRar, findWorkingPassword } = require('../services/unrarService');
+const { processDownloadedFiles, getUniqueFilePath } = require('../utils/postProcessor');
 const logger = require('../utils/logger');
 const open = require('open');
 const readline = require('readline');
@@ -74,21 +74,6 @@ function detectFileType(fileName) {
 }
 
 /**
- * Returns a unique file path if file already exists.
- */
-function getUniqueFilePath(dir, baseName, ext) {
-  let filePath = path.join(dir, `${baseName}${ext}`);
-  if (!fs.existsSync(filePath)) {
-    return filePath;
-  }
-  let counter = 1;
-  while (fs.existsSync(path.join(dir, `${baseName}_${counter}${ext}`))) {
-    counter++;
-  }
-  return path.join(dir, `${baseName}_${counter}${ext}`);
-}
-
-/**
  * Performs download for a single game.
  */
 async function downloadSingleGame(game, options = {}) {
@@ -125,12 +110,19 @@ async function downloadSingleGame(game, options = {}) {
       const section = sections[i];
       let downloadedFiles = [];
       let downloadCompleted = false;
-      
+
       const regionInfo = `region [${section.region}], PPSA [${section.ppsa}]`;
+
+      // Inner loop: retry same section with next-best host when a link is dead
+      const skipHosts = [];
+      let sectionDone = false;
+      while (!sectionDone) {
       spinner.text = `Trying option ${i + 1}/${sections.length}: ${regionInfo}...`;
-      
+
+      let currentHostName = null;
       try {
-        const bestLinks = await getBestDownloadLinks([section], null);
+        const bestLinks = await getBestDownloadLinks([section], null, { skipHosts });
+        currentHostName = bestLinks.hostName;
         
         // Filter bestLinks.urls based on targetType if specified
         const targetType = options.type ? options.type.toUpperCase() : null;
@@ -151,7 +143,7 @@ async function downloadSingleGame(game, options = {}) {
           logger.info(`Filtering downloads for type "${targetType}" (${bestLinks.urls.length} files matched)`);
         }
         
-        if (bestLinks.hostName === '1fichier') {
+        if (bestLinks.hostName === '1fichier' || bestLinks.hostName === 'Datanodes') {
           const downloadDir = process.env.DOWNLOAD_DIR || path.join(__dirname, '../../downloads');
           const downloadUrls = bestLinks.urls.filter(url => !url.startsWith('text_guide:'));
           const textGuideUrls = bestLinks.urls.filter(url => url.startsWith('text_guide:'));
@@ -169,10 +161,27 @@ async function downloadSingleGame(game, options = {}) {
             const partSpinner = ora(`Downloading${typeLabel} part ${partIdx}/${totalParts}...`).start();
             
             try {
-              const result = await download1fichier(fileUrl, downloadDir, (progress) => {
-                partSpinner.text = `Downloading${typeLabel}${partLabel}: ${progress.percent}% (${progress.receivedMB}MB / ${progress.totalMB}MB)`;
-              });
-              
+              let result;
+              if (bestLinks.hostName === 'Datanodes') {
+                result = await downloadFromDatanodes(fileUrl, downloadDir,
+                  (downloaded, total) => {
+                    const mb = (downloaded / 1024 / 1024).toFixed(1);
+                    if (total > 0) {
+                      const pct = Math.floor((downloaded / total) * 100);
+                      const totalMb = (total / 1024 / 1024).toFixed(1);
+                      partSpinner.text = `Downloading${typeLabel}${partLabel}: ${pct}% (${mb}MB / ${totalMb}MB)`;
+                    } else {
+                      partSpinner.text = `Downloading${typeLabel}${partLabel}: ${mb}MB...`;
+                    }
+                  },
+                  (status) => { partSpinner.text = status; }
+                );
+              } else {
+                result = await download1fichier(fileUrl, downloadDir, (progress) => {
+                  partSpinner.text = `Downloading${typeLabel}${partLabel}: ${progress.percent}% (${progress.receivedMB}MB / ${progress.totalMB}MB)`;
+                });
+              }
+
               if (result.skipped) {
                 partSpinner.succeed(`Already downloaded (skipped)${typeLabel} part ${partIdx}: ${result.filename}`);
               } else {
@@ -207,218 +216,28 @@ async function downloadSingleGame(game, options = {}) {
           logger.success(`Successfully completed download for "${game.title}"`);
           downloadCompleted = true;
   
-          // ── Step 3: Automatically handle password check and extraction ──
+          // ── Step 3: Password removal, extraction, rename, register ──
           if (downloadedFiles.length > 0) {
-            let finalTitle = game.title;
-            let finalPpsa = bestLinks.ppsa || targetPPSA || 'Unknown';
-            let finalVer = 'v01.00';
-            
-            // 1. Group files by type
-            const fileGroups = {};
-            for (const fileItem of downloadedFiles) {
-              const file = fileItem.filename;
-              const type = fileItem.type || 'GAME';
-              const filePath = path.join(downloadDir, file);
-              if (!fs.existsSync(filePath)) continue;
-
-              if (!fileGroups[type]) {
-                fileGroups[type] = [];
-              }
-              fileGroups[type].push(file);
-            }
-
-            // 2. Process GAME archives first to extract the correct title, ID, version from param.json
-            const gameFiles = fileGroups['GAME'] || [];
-            const gameArchives = gameFiles.filter(file => file.toLowerCase().endsWith('.rar') || file.toLowerCase().endsWith('.zip'));
-            if (gameArchives.length > 0) {
-              let mainFileName = gameArchives[0];
-              if (gameArchives.length > 1) {
-                const candidate = gameArchives.find(name => {
-                  const lower = name.toLowerCase();
-                  return (lower.endsWith('.rar') && !lower.match(/\.part[2-9]\d*\.rar$/) && !lower.match(/\.part0[2-9]\d*\.rar$/)) || 
-                         (lower.endsWith('.zip') && !lower.match(/\.part[2-9]\d*\.zip$/) && !lower.match(/\.part0[2-9]\d*\.zip$/)) ||
-                         lower.includes('part1.rar') || 
-                         lower.includes('part01.rar') ||
-                         lower.includes('part1.zip') ||
-                         lower.includes('part01.zip');
-                });
-                if (candidate) {
-                  mainFileName = candidate;
-                }
-              }
-              const mainFilePath = path.join(downloadDir, mainFileName);
-              const checkSpinner = ora(`Inspecting "${mainFileName}" internally...`).start();
-              try {
-                const gameInfo = await getGameInfoFromArchive(mainFilePath, bestLinks.password);
-                finalPpsa = gameInfo.titleId;
-                finalVer = gameInfo.version;
-                finalTitle = gameInfo.titleName;
-                checkSpinner.succeed(`Successfully read metadata from game archive.`);
-              } catch (err) {
-                checkSpinner.warn(`Failed to inspect main game archive for param.json: ${err.message}. Using fallback metadata.`);
-              }
-            }
-
-            // Keep track of which files we renamed or repackaged to register them in downloaded.xml
-            let registeredFiles = [];
-
-            // 3. Process each group
-            for (const [type, files] of Object.entries(fileGroups)) {
-              const archives = files.filter(file => file.toLowerCase().endsWith('.rar') || file.toLowerCase().endsWith('.zip'));
-              const extraFiles = files.filter(file => !file.toLowerCase().endsWith('.rar') && !file.toLowerCase().endsWith('.zip'));
-
-              const isGame = type === 'GAME';
-              const baseName = isGame ? `${finalTitle} [${finalPpsa}][${finalVer}]` : `${finalTitle} [${finalPpsa}][${type}]`;
-
-              // Handle archives in this group (GAME, DLC, BACKPORT, etc.)
-              if (archives.length > 0) {
-                let mainFileName = archives[0];
-                if (archives.length > 1) {
-                  const candidate = archives.find(name => {
-                    const lower = name.toLowerCase();
-                    return (lower.endsWith('.rar') && !lower.match(/\.part[2-9]\d*\.rar$/) && !lower.match(/\.part0[2-9]\d*\.rar$/)) || 
-                           (lower.endsWith('.zip') && !lower.match(/\.part[2-9]\d*\.zip$/) && !lower.match(/\.part0[2-9]\d*\.zip$/)) ||
-                           lower.includes('part1.rar') || 
-                           lower.includes('part01.rar') ||
-                           lower.includes('part1.zip') ||
-                           lower.includes('part01.zip');
-                  });
-                  if (candidate) {
-                    mainFileName = candidate;
-                  }
-                }
-                const mainFilePath = path.join(downloadDir, mainFileName);
-
-                // Check if the archive is encrypted or split into multiple parts
-                let encrypted = false;
-                let workingPassword = '';
-                try {
-                  workingPassword = await findWorkingPassword(mainFilePath, bestLinks.password ? [bestLinks.password] : []);
-                  encrypted = workingPassword !== '';
-                } catch (e) {
-                  // ignore
-                }
-
-                const isSplit = archives.length > 1;
-
-                if (encrypted || isSplit) {
-                  // Decrypt and extract to temporary folder, then repackage to single clean RAR
-                  const extractSpinner = ora(`[${type}] "${mainFileName}" is encrypted or split. Extracting to temporary folder...`).start();
-                  const outputFolderPath = path.join(downloadDir, baseName);
-                  try {
-                    await extractRarArchive(mainFilePath, outputFolderPath, workingPassword);
-                    
-                    if (!fs.existsSync(outputFolderPath) || fs.readdirSync(outputFolderPath).length === 0) {
-                      throw new Error(`Extraction failed: Output folder was not created or is empty: ${outputFolderPath}`);
-                    }
-                    extractSpinner.succeed(`[${type}] Successfully extracted to folder: ${baseName}`);
-
-                    // Clean up original downloaded archive files in this group
-                    const deleteSpinner = ora(`[${type}] Cleaning up downloaded archives...`).start();
-                    const basePattern = mainFileName.replace(/\.part[0-9]+\.rar$/i, '').replace(/\.part[0-9]+\.zip$/i, '').replace(/\.rar$/i, '').replace(/\.zip$/i, '');
-                    for (const file of archives) {
-                      if (file.toLowerCase().startsWith(basePattern.toLowerCase()) || file === mainFileName) {
-                        try {
-                          fs.unlinkSync(path.join(downloadDir, file));
-                        } catch (e) {
-                          // ignore
-                        }
-                      }
-                    }
-                    deleteSpinner.succeed(`[${type}] Cleaned up downloaded archive files.`);
-
-                    // Compress back to a clean RAR
-                    const compressSpinner = ora(`[${type}] Compressing back to password-free RAR: ${baseName}.rar...`).start();
-                    const destRarPath = path.join(downloadDir, `${baseName}.rar`);
-                    await compressFolderToRar(outputFolderPath, destRarPath);
-
-                    if (!fs.existsSync(destRarPath) || fs.statSync(destRarPath).size === 0) {
-                      throw new Error(`Compression failed: Output RAR file was not created or is empty: ${destRarPath}`);
-                    }
-                    compressSpinner.succeed(`[${type}] Successfully compressed to clean RAR: ${baseName}.rar`);
-                    registeredFiles.push({ fileName: `${baseName}.rar`, type });
-
-                    // Clean up temporary folder
-                    try {
-                      fs.rmSync(outputFolderPath, { recursive: true, force: true });
-                    } catch (e) {
-                      // ignore
-                    }
-                  } catch (extErr) {
-                    extractSpinner.fail(`[${type}] Processing failed: ${extErr.message}`);
-                    logFailure(game.title, game.url, `[${type}] Processing failed: ${extErr.message}`);
-                    throw extErr;
-                  }
-                } else {
-                  // Single unencrypted archive: just rename it to standard baseName + extension
-                  const origExt = path.extname(mainFileName).toLowerCase();
-                  const newFileName = `${baseName}${origExt}`;
-                  const oldPath = path.join(downloadDir, mainFileName);
-                  const newPath = path.join(downloadDir, newFileName);
-                  try {
-                    fs.renameSync(oldPath, newPath);
-                    logger.success(`[${type}] Kept original archive and renamed to standard format: ${newFileName}`);
-                    registeredFiles.push({ fileName: newFileName, type });
-                  } catch (renameErr) {
-                    logger.warn(`[${type}] Failed to rename archive: ${renameErr.message}`);
-                    registeredFiles.push({ fileName: mainFileName, type });
-                  }
-                }
-              }
-
-              // Handle extra non-archive files in this group (like guides or PKG files)
-              for (const file of extraFiles) {
-                const oldPath = path.join(downloadDir, file);
-                const ext = path.extname(file);
-                const newPath = getUniqueFilePath(downloadDir, baseName, ext);
-                const newFileName = path.basename(newPath);
-                try {
-                  fs.renameSync(oldPath, newPath);
-                  logger.info(`Renamed auxiliary file "${file}" to "${newFileName}"`);
-                  registeredFiles.push({ fileName: newFileName, type });
-                } catch (renameErr) {
-                  logger.warn(`Failed to rename auxiliary file "${file}": ${renameErr.message}`);
-                  registeredFiles.push({ fileName: file, type });
-                }
-              }
-            }
-
-            // Register downloaded files in the downloaded.xml database
-            // If the GAME group was downloaded, register the game file first
-            const gameToRegister = registeredFiles.find(rf => rf.type === 'GAME');
-            const otherToRegister = registeredFiles.filter(rf => rf.type !== 'GAME');
-
-            if (gameToRegister) {
-              addDownloadedGame({
-                title: finalTitle,
-                fileName: gameToRegister.fileName,
-                ppsa: finalPpsa,
-                password: '',
-                source: '1fichier',
-                region: bestLinks.region
-              });
-            }
-
-            // If no GAME was downloaded, register the first auxiliary file instead
-            if (!gameToRegister && otherToRegister.length > 0) {
-              addDownloadedGame({
-                title: finalTitle,
-                fileName: otherToRegister[0].fileName,
-                ppsa: finalPpsa,
-                password: '',
-                source: '1fichier',
-                region: bestLinks.region
-              });
-            }
+            await processDownloadedFiles({
+              downloadedFiles,
+              downloadDir,
+              password: options.password || bestLinks.password,
+              hostName: bestLinks.hostName,
+              region: bestLinks.region,
+              initialTitle: game.title,
+              initialPpsa: bestLinks.ppsa || targetPPSA || 'Unknown'
+            });
           }
           success = true;
+          sectionDone = true;
           break; // Successfully handled the section, exit loop
         } else {
-          // If this is the first non-1fichier fallback links candidate we see, save it
+          // If this is the first non-auto-downloadable fallback candidate we see, save it
           if (!fallbackLinks) {
             fallbackLinks = bestLinks;
           }
-          spinner.info(`1fichier link is not available for region [${section.region}] (best is ${bestLinks.hostName}). Saving as browser fallback candidate...`);
+          spinner.info(`No auto-downloadable host for region [${section.region}] (best available: ${bestLinks.hostName}). Saving as browser fallback...`);
+          sectionDone = true;
         }
       } catch (err) {
         lastError = err;
@@ -433,19 +252,29 @@ async function downloadSingleGame(game, options = {}) {
             }
           }
         }
-        
+
         if (downloadCompleted) {
           logger.error(`\nAttempt failed after download completion: ${err.message}. Aborting further region attempts.`);
-          break; // Stop trying other regions since we already downloaded the archive
+          sectionDone = true;
+          break;
+        } else if (err.isLinkDead && currentHostName) {
+          // Link is dead — skip this host and retry the same section with the next best host
+          skipHosts.push(currentHostName);
+          logger.warn(`\n[${regionInfo}] ${currentHostName} link is dead. Trying next available host...`);
+          downloadedFiles = [];
+          // continue inner while loop
         } else {
           logger.warn(`\nAttempt failed for ${regionInfo}: ${err.message}. Trying next available option...`);
+          sectionDone = true;
         }
       }
+      } // end inner while (!sectionDone)
+      if (success) break;
     }
 
     if (!success) {
       if (fallbackLinks) {
-        spinner.warn(`1fichier link is not available in any region. Opening browser fallback for highest priority region [${fallbackLinks.region}] (${fallbackLinks.hostName})...`);
+        spinner.warn(`No auto-downloadable host found in any region. Opening browser fallback for [${fallbackLinks.region}] (${fallbackLinks.hostName})...`);
         for (const url of fallbackLinks.urls) {
           await open(url);
         }
@@ -456,8 +285,10 @@ async function downloadSingleGame(game, options = {}) {
     }
 
   } catch (err) {
-    spinner.fail(`Download failed for "${game.title}": ${err.message}`);
-    logFailure(game.title, game.url, err.message);
+    if (!err.isUserError) {
+      spinner.fail(`Download failed for "${game.title}": ${err.message}`);
+      logFailure(game.title, game.url, err.message);
+    }
     throw err;
   }
 }
@@ -517,6 +348,16 @@ async function downloadCommand(titleQuery, options = {}) {
       return;
     }
 
+    if (options.completed) {
+      if (!titleQuery) {
+        logger.error('Please specify a game title to mark as completed. Example: ps5dl download "3D MiniGolf" --completed');
+        return;
+      }
+      const completedCommand = require('./completed');
+      await completedCommand(titleQuery, options);
+      return;
+    }
+
     if (!titleQuery) {
       logger.error('Please specify a game title to download. Example: ps5dl download "3D MiniGolf"');
       return;
@@ -568,7 +409,11 @@ async function downloadCommand(titleQuery, options = {}) {
     });
 
   } catch (err) {
-    logger.error('Download command failed.', err);
+    if (err.isUserError) {
+      logger.error(err.message);
+    } else {
+      logger.error('Download command failed.', err);
+    }
   }
 }
 

@@ -68,7 +68,9 @@ async function download1fichier(fileUrl, destDir, onProgress) {
     );
   } catch (err) {
     if (err.response && err.response.status === 404) {
-      throw new Error('File not found (404) on 1fichier. The download link is likely dead or has been deleted.');
+      const e = new Error('File not found (404) on 1fichier. The download link is likely dead or has been deleted.');
+      e.isLinkDead = true;
+      throw e;
     }
     throw err;
   }

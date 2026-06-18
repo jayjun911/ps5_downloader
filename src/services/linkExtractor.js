@@ -25,6 +25,7 @@ function getRegionPriority(regionName) {
 // Download host priority. Lower index represents higher priority.
 const HOST_PRIORITY_PATTERNS = [
   /1fichier\.com|1file/i,
+  /datanodes\.to/i,
   /mediafire\.com/i,
   /akirabox\.com|akia/i,
   /vikingfile\.com|viki/i,
@@ -42,6 +43,7 @@ function getHostPriority(url) {
 
 function getHostNameFromUrl(url) {
   if (/1fichier\.com|1file/i.test(url)) return '1fichier';
+  if (/datanodes\.to/i.test(url)) return 'Datanodes';
   if (/mediafire\.com/i.test(url)) return 'Mediafire';
   if (/akirabox\.com|akia/i.test(url)) return 'Akia';
   if (/vikingfile\.com|viki/i.test(url)) return 'Viki';
@@ -73,8 +75,10 @@ function shouldDropBackport(text, url = '', label = '') {
   }
   
   if (versions.length > 0) {
-    // Keep only if at least one firmware is >= 7
-    return !versions.some(v => v >= 7);
+    // Keep only if the target (minimum) firmware version is >= 7
+    // For example, "4.xx & 8.xx" targets 4.xx, so minVersion is 4, which is dropped.
+    const minVersion = Math.min(...versions);
+    return minVersion < 7;
   }
   
   // Default: if no firmware is mentioned, drop it (safer for PS5 <7.00 backports)
@@ -87,11 +91,19 @@ function shouldDropBackport(text, url = '', label = '') {
 function detectTypeFromText(text, url = '', label = '') {
   const lower = (text + ' ' + url + ' ' + label).toLowerCase();
   if (lower.includes('unlock')) return 'UNLOCK';
-  if (lower.includes('dlc')) return 'DLC';
+
+  // "Game (vX.X) + DLC" → the primary content is the GAME; DLC is just bundled.
+  // Detect by checking if 'game' appears in the text before 'dlc'.
+  const gameIdx = lower.indexOf('game');
+  const dlcIdx = lower.indexOf('dlc');
+  if (dlcIdx >= 0) {
+    if (gameIdx >= 0 && gameIdx < dlcIdx) return 'GAME';
+    return 'DLC';
+  }
+
   if (lower.includes('backport')) return 'BACKPORT';
   if (lower.includes('patch') || lower.includes('update') || lower.includes('fix')) return 'UPDATE';
   if (lower.includes('guide') || lower.includes('readme') || lower.includes('instruction')) return 'INSTALL_GUIDE';
-  if (lower.includes('game')) return 'GAME';
   return 'GAME';
 }
 
@@ -149,8 +161,8 @@ function decodeAndExtractLinks(base64Payload) {
 
   const $ = cheerio.load(decoded);
 
-  // Extract password (usually written like "Password: DLPSGAME.COM")
-  const passwordMatch = $.text().match(/Password:\s*([^\s<]+)/i);
+  // Extract password — site sometimes typos "Pasword" (missing s), so match loosely
+  const passwordMatch = $.text().match(/Pas+w?ord\s*:\s*([^\s<\n]+)/i);
   const password = passwordMatch ? passwordMatch[1].trim() : '';
 
   const groups = [];
@@ -250,7 +262,7 @@ function decodeAndExtractLinks(base64Payload) {
  * @param {string} targetPPSA
  * @returns {Promise<{urls: string[], urlInfo: Array<{url: string, type: string}>, password: string, region: string, hostName: string}>}
  */
-async function getBestDownloadLinks(sections, targetPPSA) {
+async function getBestDownloadLinks(sections, targetPPSA, { skipHosts = [] } = {}) {
   // 1. Filter sections matching targetPPSA (if targetPPSA is specified)
   const matchingSections = targetPPSA 
     ? sections.filter(sec => sec.ppsa === targetPPSA)
@@ -260,13 +272,26 @@ async function getBestDownloadLinks(sections, targetPPSA) {
     throw new Error(`No sections found matching PPSA: ${targetPPSA}`);
   }
 
-  // 2. Sort by region priority
-  matchingSections.sort((a, b) => {
+  // 2. Drop sections whose region name explicitly marks them as backports with firmware < 7.00.
+  // We check the region name (e.g. "EUR (BackPort 4.xx) (exFAT)") rather than the section
+  // body because the body contains credits text like "Kira for the BackPort" that would
+  // create false positives.
+  const filteredSections = matchingSections.filter(section => {
+    if (/backport/i.test(section.region) && shouldDropBackport(section.region)) return false;
+    return true;
+  });
+
+  if (filteredSections.length === 0) {
+    throw new Error(`No sections found after filtering backports for PPSA: ${targetPPSA}`);
+  }
+
+  // 3. Sort by region priority
+  filteredSections.sort((a, b) => {
     return getRegionPriority(a.region) - getRegionPriority(b.region);
   });
 
   // Try each region section in order of priority (in case of failure to extract/resolve)
-  for (const section of matchingSections) {
+  for (const section of filteredSections) {
     try {
       const { groups, password } = decodeAndExtractLinks(section.base64Payload);
       
@@ -319,7 +344,8 @@ async function getBestDownloadLinks(sections, targetPPSA) {
             }
           }
 
-          const sortedHostKeys = Object.keys(groupedByHost).map(Number).sort((a, b) => a - b);
+          const sortedHostKeys = Object.keys(groupedByHost).map(Number).sort((a, b) => a - b)
+            .filter(key => !skipHosts.includes(getHostNameFromUrl(groupedByHost[key][0])));
           if (sortedHostKeys.length > 0) {
             const bestHostIndex = sortedHostKeys[0];
             const bestUrls = groupedByHost[bestHostIndex];

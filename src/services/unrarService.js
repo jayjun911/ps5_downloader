@@ -113,15 +113,36 @@ async function isArchiveEncrypted(rarFilePath) {
   }
 
   const unrarPath = await downloadUnrarIfNeeded();
+  
+  // Try to list files bare without a password (to check if headers are encrypted)
+  let firstFile = '';
   try {
-    // Run test command with empty/no password (-p-)
-    // If it requires a password, it will exit with code 3 (or throw error)
-    execSync(`"${unrarPath}" t -p- "${rarFilePath}"`, { stdio: 'ignore' });
-    return false; // Successful test with no password means it is NOT encrypted
+    const listOutput = execSync(`"${unrarPath}" lb -y -p- "${rarFilePath}"`, { stdio: ['pipe', 'pipe', 'ignore'], encoding: 'utf-8' });
+    const lines = listOutput.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+    const fileLines = lines.filter(l => !l.endsWith('/') && !l.endsWith('\\') && l.includes('.'));
+    if (fileLines.length > 0) {
+      firstFile = fileLines[0];
+    } else if (lines.length > 0) {
+      firstFile = lines[0];
+    }
   } catch (err) {
-    // Failure typically means password required or headers locked
+    // If listing fails, headers are encrypted -> password protected
     return true; 
   }
+
+  if (firstFile) {
+    try {
+      // Test only the first file to check if file data is encrypted
+      // Replace [ and ] with ? to avoid UnRAR interpreting them as wildcard character classes
+      const cleanFile = firstFile.replace(/\[/g, '?').replace(/\]/g, '?');
+      execSync(`"${unrarPath}" t -y -p- "${rarFilePath}" "${cleanFile}"`, { stdio: 'ignore' });
+      return false; // Successful test of first file without password -> not encrypted
+    } catch (err) {
+      return true; // Test failed -> file data is encrypted
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -304,7 +325,7 @@ async function getGameInfoFromArchive(rarFilePath, password) {
       if (fs.existsSync(RAR_EXE_PATH)) {
         const candidates = [];
         if (password) candidates.push(password);
-        const fallbacks = ['DLPSGAME.COM', 'dlpsgame.com'];
+        const fallbacks = ['www.DLPSGAME.COM', 'DLPSGAME.COM', 'www.dlpsgame.com', 'dlpsgame.com'];
         for (const fb of fallbacks) {
           if (!candidates.includes(fb)) candidates.push(fb);
         }
@@ -322,33 +343,59 @@ async function getGameInfoFromArchive(rarFilePath, password) {
     }
   } else {
     const unrarPath = await downloadUnrarIfNeeded();
-    // Try 1: Extract *param.json without a password
-    try {
-      execSync(`"${unrarPath}" x -y -p- "${rarFilePath}" "*param.json" "${tempDir}\\"`, { stdio: 'ignore' });
-      success = true;
-    } catch (err) {
-      // Try 2: Extract *param.json with password candidate list
-      encrypted = true;
-      const candidates = [];
-      if (password) {
-        candidates.push(password);
-      }
-      const fallbacks = ['DLPSGAME.COM', 'dlpsgame.com'];
-      for (const fb of fallbacks) {
-        if (!candidates.includes(fb)) {
-          candidates.push(fb);
-        }
-      }
 
+    // Step 1: List archive contents to find param.json's exact internal path.
+    // UnRAR's * wildcard does not cross path separators, so "*param.json" fails to match
+    // "sce_sys\param.json". We must find the exact path via lb then use "e" to extract it.
+    let fileList = [];
+    try {
+      const listOutput = execSync(`"${unrarPath}" lb -y -p- "${rarFilePath}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] });
+      fileList = listOutput.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+    } catch (err) {
+      encrypted = true;
+    }
+
+    const candidates = [];
+    if (password) candidates.push(password);
+    const fallbacks = ['www.DLPSGAME.COM', 'DLPSGAME.COM', 'www.dlpsgame.com', 'dlpsgame.com'];
+    for (const fb of fallbacks) {
+      if (!candidates.includes(fb)) candidates.push(fb);
+    }
+
+    // If listing failed (headers encrypted), try with each candidate password
+    if (encrypted && fileList.length === 0) {
       for (const cand of candidates) {
         try {
-          execSync(`"${unrarPath}" x -y -p"${cand}" "${rarFilePath}" "*param.json" "${tempDir}\\"`, { stdio: 'ignore' });
-          success = true;
-          workingPassword = cand;
-          break; // Successfully extracted using this password!
-        } catch (pwdErr) {
-          // Try next candidate
+          const listOutput = execSync(`"${unrarPath}" lb -y -p"${cand}" "${rarFilePath}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] });
+          fileList = listOutput.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+          if (fileList.length > 0) break;
+        } catch (e) { /* try next */ }
+      }
+    }
+
+    // Find param.json's exact path inside the archive (match by filename only)
+    const paramJsonInternal = fileList.find(l => path.basename(l).toLowerCase() === 'param.json');
+
+    // Step 2: Extract param.json using "e" (flat extract — no path issues).
+    // Try without password first, then each candidate.
+    const extractCandidates = encrypted ? candidates : ['', ...candidates];
+    for (const cand of extractCandidates) {
+      const pwdArg = cand ? `-p"${cand}"` : '-p-';
+      try {
+        if (paramJsonInternal) {
+          execSync(`"${unrarPath}" e -y ${pwdArg} "${rarFilePath}" "${paramJsonInternal}" "${tempDir}\\"`, { stdio: 'ignore' });
+        } else {
+          // Fallback if lb couldn't find param.json (unusual structure)
+          execSync(`"${unrarPath}" x -y ${pwdArg} "${rarFilePath}" "*param.json" "${tempDir}\\"`, { stdio: 'ignore' });
         }
+        if (findParamJson(tempDir)) {
+          success = true;
+          encrypted = !!cand;
+          workingPassword = cand;
+          break;
+        }
+      } catch (err) {
+        // Wrong password or extraction error, try next candidate
       }
     }
   }
@@ -424,12 +471,9 @@ async function getGameInfoFromArchive(rarFilePath, password) {
  * @returns {Promise<string>}
  */
 async function findWorkingPassword(rarFilePath, passwordCandidates = []) {
-  const encrypted = await isArchiveEncrypted(rarFilePath);
-  if (!encrypted) return '';
-
   const isZip = rarFilePath.toLowerCase().endsWith('.zip');
   const candidates = [...passwordCandidates];
-  const fallbacks = ['DLPSGAME.COM', 'dlpsgame.com'];
+  const fallbacks = ['www.DLPSGAME.COM', 'DLPSGAME.COM', 'www.dlpsgame.com', 'dlpsgame.com'];
   for (const fb of fallbacks) {
     if (!candidates.includes(fb)) candidates.push(fb);
   }
@@ -445,15 +489,61 @@ async function findWorkingPassword(rarFilePath, passwordCandidates = []) {
         }
       }
     }
-  } else {
-    const unrarPath = await downloadUnrarIfNeeded();
+    return '';
+  }
+
+  const unrarPath = await downloadUnrarIfNeeded();
+
+  // Step 1: List files without password to detect header encryption and find a test file.
+  // Using "e" + exact file path avoids the * wildcard / path-separator issue in "t" / "x".
+  let headersEncrypted = false;
+  let fileList = [];
+  try {
+    const listOutput = execSync(`"${unrarPath}" lb -y -p- "${rarFilePath}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] });
+    fileList = listOutput.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+  } catch (err) {
+    headersEncrypted = true;
+  }
+
+  // Prefer param.json (small) as test file; fall back to first regular file
+  const testFile = fileList.find(l => path.basename(l).toLowerCase() === 'param.json')
+    || fileList.find(l => !l.endsWith('/') && !l.endsWith('\\') && l.includes('.'))
+    || fileList[0]
+    || '';
+
+  // Header-encrypted: a correct password lets lb list the archive
+  if (headersEncrypted) {
     for (const cand of candidates) {
       try {
-        execSync(`"${unrarPath}" t -y -p"${cand}" "${rarFilePath}"`, { stdio: 'ignore' });
+        execSync(`"${unrarPath}" lb -y -p"${cand}" "${rarFilePath}"`, { stdio: 'ignore' });
         return cand;
-      } catch (e) {
-        // ignore and try next
+      } catch (e) { /* try next */ }
+    }
+    return '';
+  }
+
+  // Data-encrypted (headers readable): verify by trying to extract the test file
+  if (testFile) {
+    const tempTestDir = path.join(BIN_DIR, 'temp_pwdtest_' + Date.now());
+    try {
+      fs.mkdirSync(tempTestDir, { recursive: true });
+
+      // No password needed?
+      try {
+        execSync(`"${unrarPath}" e -y -p- "${rarFilePath}" "${testFile}" "${tempTestDir}\\"`, { stdio: 'ignore' });
+        if (fs.readdirSync(tempTestDir).length > 0) return ''; // Not encrypted
+      } catch (e) { /* data is encrypted */ }
+
+      // Try each candidate
+      for (const cand of candidates) {
+        try {
+          fs.readdirSync(tempTestDir).forEach(f => { try { fs.unlinkSync(path.join(tempTestDir, f)); } catch (e) {} });
+          execSync(`"${unrarPath}" e -y -p"${cand}" "${rarFilePath}" "${testFile}" "${tempTestDir}\\"`, { stdio: 'ignore' });
+          if (fs.readdirSync(tempTestDir).length > 0) return cand;
+        } catch (e) { /* wrong password */ }
       }
+    } finally {
+      try { fs.rmSync(tempTestDir, { recursive: true, force: true }); } catch (e) {}
     }
   }
 
@@ -462,7 +552,7 @@ async function findWorkingPassword(rarFilePath, passwordCandidates = []) {
 
 /**
  * Compresses a folder back to a RAR archive.
- * 
+ *
  * @param {string} folderPath The folder containing files to compress
  * @param {string} destRarPath The output RAR file path
  * @returns {Promise<void>}
@@ -474,9 +564,27 @@ async function compressFolderToRar(folderPath, destRarPath) {
 
   // 'a' adds to archive, '-r' recurses, '-ep1' excludes base folder, '-y' answers Yes
   const cmd = `"${RAR_EXE_PATH}" a -r -ep1 -y "${destRarPath}" "${folderPath}\\"`;
-  
+
   logger.info(`Executing rar: "${RAR_EXE_PATH}" a -r -ep1 -y "${destRarPath}" "${folderPath}"`);
-  
+
+  execSync(cmd, { stdio: 'inherit' });
+}
+
+/**
+ * Compresses a single file into a RAR archive.
+ *
+ * @param {string} filePath Path to the file to compress
+ * @param {string} destRarPath Output RAR path
+ * @returns {Promise<void>}
+ */
+async function compressFileToRar(filePath, destRarPath) {
+  if (!fs.existsSync(RAR_EXE_PATH)) {
+    throw new Error(`Rar.exe was not found in the bin directory at: ${RAR_EXE_PATH}`);
+  }
+
+  // -ep: store only filename (no leading path), -y: yes to all
+  const cmd = `"${RAR_EXE_PATH}" a -ep -y "${destRarPath}" "${filePath}"`;
+  logger.info(`Compressing file to RAR: "${filePath}" -> "${destRarPath}"`);
   execSync(cmd, { stdio: 'inherit' });
 }
 
@@ -486,5 +594,6 @@ module.exports = {
   extractRarArchive,
   getGameInfoFromArchive,
   compressFolderToRar,
+  compressFileToRar,
   findWorkingPassword
 };

@@ -17,6 +17,7 @@
     "dotenv": "^16.4.5",
     "fast-xml-parser": "^4.3.6",
     "open": "^8.4.2",
-    "ora": "^5.4.1"
+    "ora": "^5.4.1",
+    "playwright-core": "^1.61.0"
   }
 }

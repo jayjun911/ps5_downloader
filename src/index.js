@@ -6,6 +6,7 @@ const listCommand = require('./commands/list');
 const downloadCommand = require('./commands/download');
 const openCommand = require('./commands/open');
 const excludeCommand = require('./commands/exclude');
+const completedCommand = require('./commands/completed');
 
 program
   .name('ps5dl')
@@ -27,6 +28,8 @@ program
   .argument('[title]', 'Title of the game to download')
   .option('-l, --limit <number>', 'Batch download first N games from TBD list')
   .option('-t, --type <string>', 'Download only specific file types (e.g. GAME, DLC, BACKPORT, UPDATE)')
+  .option('-c, --completed', 'Mark the game as completed/downloaded without downloading it')
+  .option('-p, --password <string>', 'Override archive password (used when auto-detection fails)')
   .description('Download a specific game or a batch of games from TBD list')
   .action((title, options) => {
     downloadCommand(title, options);
@@ -47,6 +50,34 @@ program
   .description('Manage excluded games list (add, remove, or list exclusions)')
   .action((title, options) => {
     excludeCommand(title, options);
+  });
+
+program
+  .command('completed')
+  .argument('[title]', 'Title of the game to mark as completed')
+  .option('-r, --remove', 'Remove the game from the completed list')
+  .description('Manage completed games list (add, remove, or list completed games)')
+  .action((title, options) => {
+    completedCommand(title, options);
+  });
+
+program
+  .command('dupe')
+  .argument('[query]', 'Search query for games in TBD/Web list to check for duplicates')
+  .description('Find and mark web games as duplicates of existing local/completed games')
+  .action((query) => {
+    const dupeCommand = require('./commands/dupe');
+    dupeCommand(query);
+  });
+
+program
+  .command('urldown')
+  .argument('<url>', '1fichier.com, datanodes.to, or vikingfile.com file URL')
+  .option('-p, --password <string>', 'Archive password (if auto-detection fails)')
+  .description('Download directly from a file URL and post-process (rename, unpack, register)')
+  .action((url, options) => {
+    const urldownCommand = require('./commands/urldown');
+    urldownCommand(url, options);
   });
 
 program.parse(process.argv);

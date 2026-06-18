@@ -70,7 +70,11 @@ async function getWebGameList(forceRefresh = false) {
         // Make sure it's valid JSON list (not 'INVALID...' or empty array from failed fetch)
         const parsed = JSON.parse(cachedContent);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          // Re-normalize titles dynamically to prevent stale cache discrepancies
+          return parsed.map(g => ({
+            ...g,
+            normalizedTitle: normalizeTitle(g.title)
+          }));
         }
       } catch (e) {
         // Fallback

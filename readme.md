@@ -133,6 +133,23 @@ Exclude specific games from being downloaded during batch/limit runs.
     ps5dl open "After The Fall"
     ```
 
+### 5. Managing Completed Games (`ps5dl completed` or `ps5dl download --completed`)
+Manually mark a game as downloaded (completed) in `downloaded.xml` without actually downloading it.
+*   **Show completed games list**:
+    ```bash
+    ps5dl completed
+    ```
+*   **Mark a game as completed**:
+    ```bash
+    ps5dl completed "Game Title Here"
+    # or
+    ps5dl download "Game Title Here" --completed
+    ```
+*   **Remove a game from the completed list**:
+    ```bash
+    ps5dl completed "Game Title Here" --remove
+    ```
+
 ---
 
 ## 5. Automatic Download & Extraction Pipeline
@@ -277,6 +294,23 @@ CACHE_TTL_HOURS=24
 *   기본 웹 브라우저를 띄워 매칭되는 게임의 웹 페이지 정보를 엽니다:
     ```bash
     ps5dl open "After The Fall"
+    ```
+
+### 5. 다운로드 완료 수동 관리 (`ps5dl completed` 또는 `ps5dl download --completed`)
+실제 파일을 다운로드받지 않고도 로컬 데이터베이스(`downloaded.xml`)에 특정 게임을 다운로드 완료(완료 목록) 상태로 등록/해제 관리합니다.
+*   **완료 등록된 전체 목록 조회**:
+    ```bash
+    ps5dl completed
+    ```
+*   **게임 완료 등록 (수동 등록)**:
+    ```bash
+    ps5dl completed "Game Title Here"
+    # 또는
+    ps5dl download "Game Title Here" --completed
+    ```
+*   **완료 목록에서 제외 (등록 해제)**:
+    ```bash
+    ps5dl completed "Game Title Here" --remove
     ```
 
 ---
