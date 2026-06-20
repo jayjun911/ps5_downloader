@@ -82,8 +82,10 @@ async function downloadFromDatanodes(fileUrl, destDir, onProgress, onStatus) {
   });
   updateCookies(step2);
 
-  const fnameMatch = step2.data.match(/name="fname"\s+value="([^"]+)"/);
-  const fname = fnameMatch ? fnameMatch[1] : fileId;
+  // Extract fname — handle both attribute orders
+  const fnameInputMatch = step2.data.match(/<input[^>]*name="fname"[^>]*>/i);
+  const fnameValueMatch = fnameInputMatch && fnameInputMatch[0].match(/value="([^"]*)"/i);
+  const fname = (fnameValueMatch && fnameValueMatch[1]) ? fnameValueMatch[1] : fileId;
 
   // Step 3: POST download1 → countdown page
   const step3 = await axios.post(downloadPageUrl, new URLSearchParams({

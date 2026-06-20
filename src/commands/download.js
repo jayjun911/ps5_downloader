@@ -149,63 +149,79 @@ async function downloadSingleGame(game, options = {}) {
           const textGuideUrls = bestLinks.urls.filter(url => url.startsWith('text_guide:'));
 
           const totalParts = downloadUrls.length;
-          let partIdx = 1;
-
           const useFdm = !!(process.env.DOWNLOAD_MANAGER || '').trim();
 
-          for (const fileUrl of downloadUrls) {
-            const partLabel = totalParts > 1 ? ` (Part ${partIdx}/${totalParts})` : '';
-
-            // Resolve file type from urlInfo
-            const info = bestLinks.urlInfo ? bestLinks.urlInfo.find(ui => ui.url === fileUrl) : null;
-            const typeLabel = info ? ` [${info.type}]` : ' [GAME]';
-
-            const partSpinner = ora(`Downloading${typeLabel} part ${partIdx}/${totalParts}...`).start();
-
+          if (useFdm) {
+            // ── FDM mode: queue all parts simultaneously, wait concurrently ──
+            const { downloadAllWithFdm } = require('../services/fdmDownloader');
+            const fdmSpinner = ora(`[FDM] Queuing ${totalParts} file(s)...`).start();
             try {
-              let result;
-              if (useFdm) {
-                const { downloadWithFdm } = require('../services/fdmDownloader');
-                result = await downloadWithFdm(
-                  fileUrl,
-                  downloadDir,
-                  (status) => { partSpinner.text = `${typeLabel}${partLabel} ${status}`; },
-                  bestLinks.hostName === '1fichier'
-                );
-              } else if (bestLinks.hostName === 'Datanodes') {
-                result = await downloadFromDatanodes(fileUrl, downloadDir,
-                  (downloaded, total) => {
-                    const mb = (downloaded / 1024 / 1024).toFixed(1);
-                    if (total > 0) {
-                      const pct = Math.floor((downloaded / total) * 100);
-                      const totalMb = (total / 1024 / 1024).toFixed(1);
-                      partSpinner.text = `Downloading${typeLabel}${partLabel}: ${pct}% (${mb}MB / ${totalMb}MB)`;
-                    } else {
-                      partSpinner.text = `Downloading${typeLabel}${partLabel}: ${mb}MB...`;
-                    }
-                  },
-                  (status) => { partSpinner.text = status; }
-                );
-              } else {
-                result = await download1fichier(fileUrl, downloadDir, (progress) => {
-                  partSpinner.text = `Downloading${typeLabel}${partLabel}: ${progress.percent}% (${progress.receivedMB}MB / ${progress.totalMB}MB)`;
-                });
+              const fdmResults = await downloadAllWithFdm(
+                downloadUrls,
+                downloadDir,
+                (status) => { fdmSpinner.text = `[FDM] ${status}`; },
+                bestLinks.hostName === '1fichier'
+              );
+              const skippedCount = fdmResults.filter(r => r.skipped).length;
+              const dlCount = fdmResults.length - skippedCount;
+              fdmSpinner.succeed(
+                `[FDM] Done — ${dlCount} downloaded, ${skippedCount} skipped` +
+                ` (${fdmResults.map(r => r.filename).join(', ')})`
+              );
+              for (const r of fdmResults) {
+                const ui = bestLinks.urlInfo ? bestLinks.urlInfo.find(u => u.url === r.fileUrl) : null;
+                downloadedFiles.push({ filename: r.filename, type: ui ? ui.type : 'GAME' });
               }
-
-              if (result.skipped) {
-                partSpinner.succeed(`Already downloaded (skipped)${typeLabel} part ${partIdx}: ${result.filename}`);
-              } else {
-                partSpinner.succeed(`Downloaded${typeLabel} part ${partIdx}: ${result.filename}`);
-              }
-              const info = bestLinks.urlInfo ? bestLinks.urlInfo.find(ui => ui.url === fileUrl) : null;
-              const type = info ? info.type : 'GAME';
-              downloadedFiles.push({ filename: result.filename, type });
-            } catch (downloadErr) {
-              partSpinner.fail(`Failed to download${typeLabel} part ${partIdx}: ${downloadErr.message}`);
-              logFailure(game.title, game.url, `Download${typeLabel} Part ${partIdx} failed: ${downloadErr.message}`);
-              throw downloadErr;
+            } catch (fdmErr) {
+              fdmSpinner.fail(`[FDM] Download failed: ${fdmErr.message}`);
+              logFailure(game.title, game.url, `FDM download failed: ${fdmErr.message}`);
+              throw fdmErr;
             }
-            partIdx++;
+          } else {
+            // ── Built-in streamer: sequential per-part ───────────────────────
+            let partIdx = 1;
+            for (const fileUrl of downloadUrls) {
+              const partLabel = totalParts > 1 ? ` (Part ${partIdx}/${totalParts})` : '';
+              const info = bestLinks.urlInfo ? bestLinks.urlInfo.find(ui => ui.url === fileUrl) : null;
+              const typeLabel = info ? ` [${info.type}]` : ' [GAME]';
+              const partSpinner = ora(`Downloading${typeLabel} part ${partIdx}/${totalParts}...`).start();
+
+              try {
+                let result;
+                if (bestLinks.hostName === 'Datanodes') {
+                  result = await downloadFromDatanodes(fileUrl, downloadDir,
+                    (downloaded, total) => {
+                      const mb = (downloaded / 1024 / 1024).toFixed(1);
+                      if (total > 0) {
+                        const pct = Math.floor((downloaded / total) * 100);
+                        const totalMb = (total / 1024 / 1024).toFixed(1);
+                        partSpinner.text = `Downloading${typeLabel}${partLabel}: ${pct}% (${mb}MB / ${totalMb}MB)`;
+                      } else {
+                        partSpinner.text = `Downloading${typeLabel}${partLabel}: ${mb}MB...`;
+                      }
+                    },
+                    (status) => { partSpinner.text = status; }
+                  );
+                } else {
+                  result = await download1fichier(fileUrl, downloadDir, (progress) => {
+                    partSpinner.text = `Downloading${typeLabel}${partLabel}: ${progress.percent}% (${progress.receivedMB}MB / ${progress.totalMB}MB)`;
+                  });
+                }
+
+                if (result.skipped) {
+                  partSpinner.succeed(`Already downloaded (skipped)${typeLabel} part ${partIdx}: ${result.filename}`);
+                } else {
+                  partSpinner.succeed(`Downloaded${typeLabel} part ${partIdx}: ${result.filename}`);
+                }
+                const type = info ? info.type : 'GAME';
+                downloadedFiles.push({ filename: result.filename, type });
+              } catch (downloadErr) {
+                partSpinner.fail(`Failed to download${typeLabel} part ${partIdx}: ${downloadErr.message}`);
+                logFailure(game.title, game.url, `Download${typeLabel} Part ${partIdx} failed: ${downloadErr.message}`);
+                throw downloadErr;
+              }
+              partIdx++;
+            }
           }
           
           // Save text guides as files

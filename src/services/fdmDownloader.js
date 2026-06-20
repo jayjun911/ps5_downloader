@@ -120,8 +120,10 @@ async function resolveDatanodesDirectUrl(fileUrl) {
   const step2 = await axios.get(downloadPageUrl, { headers: makeHeaders({ 'Referer': filePageUrl }), maxRedirects: 5 });
   updateCookies(step2);
 
-  const fnameMatch = step2.data.match(/name="fname"\s+value="([^"]+)"/);
-  const fname = fnameMatch ? fnameMatch[1] : fileId;
+  // Extract fname — handle both attribute orders
+  const fnameInputMatch = step2.data.match(/<input[^>]*name="fname"[^>]*>/i);
+  const fnameValueMatch = fnameInputMatch && fnameInputMatch[0].match(/value="([^"]*)"/i);
+  const fname = (fnameValueMatch && fnameValueMatch[1]) ? fnameValueMatch[1] : fileId;
 
   const step3 = await axios.post(downloadPageUrl, new URLSearchParams({
     op: 'download1', usr_login: '', id: fileId, fname, referer: filePageUrl, method_free: 'Free Download >>'
@@ -162,51 +164,126 @@ async function resolveDatanodesDirectUrl(fileUrl) {
   }
 
   let filename = null;
-  try {
-    const headRes = await axios.head(directUrl, { headers: makeHeaders({ 'Referer': downloadPageUrl }), maxRedirects: 5, timeout: 15000 });
-    filename = getFilenameFromDisposition(headRes.headers['content-disposition']);
-  } catch (e) {}
-  if (!filename) {
-    try { filename = decodeURIComponent(path.basename(new URL(directUrl).pathname)); } catch (_) {}
+
+  // 1. fname from step2 form — the actual filename; prioritize over CDN URL path
+  if (fname && fname !== fileId && path.extname(fname) && fname.length <= 255) {
+    filename = fname;
   }
+
+  // 2. Content-Disposition from HEAD on direct URL
+  if (!filename) {
+    try {
+      const headRes = await axios.head(directUrl, {
+        headers: makeHeaders({ 'Referer': downloadPageUrl }),
+        maxRedirects: 5,
+        timeout: 15000
+      });
+      filename = getFilenameFromDisposition(headRes.headers['content-disposition']);
+    } catch (e) { /* CDN may not support HEAD */ }
+  }
+
+  // 3. URL path basename — only accept if it has a recognisable file extension
+  if (!filename) {
+    try {
+      const urlBase = decodeURIComponent(path.basename(new URL(directUrl).pathname));
+      if (urlBase && path.extname(urlBase) && urlBase.length <= 200) filename = urlBase;
+    } catch (_) {}
+  }
+
+  // 4. Final fallback
   if (!filename) filename = fname || `${fileId}.bin`;
 
   return { directUrl, filename };
 }
 
-function pollForFile(filePath, onProgress) {
+const TEMP_EXTS = ['.fdmdownload', '.crdownload', '.part'];
+
+function isTemp(filename) {
+  return TEMP_EXTS.some(e => filename.endsWith(e));
+}
+
+function stripTemp(filename) {
+  for (const e of TEMP_EXTS) {
+    if (filename.endsWith(e)) return filename.slice(0, -e.length);
+  }
+  return filename;
+}
+
+/**
+ * Waits for FDM to complete downloading.
+ *
+ * FDM pre-allocates the full file size in <name>.fdmdownload immediately, so
+ * size growth cannot indicate progress or completion.  The only reliable signal
+ * is: .fdmdownload disappears AND the final file appears (FDM does an atomic rename).
+ *
+ * Progress is reported as elapsed time + the pre-allocated size for context.
+ */
+function pollForFile(destDir, expectedFilename, startedAt, onStatus) {
   return new Promise((resolve, reject) => {
     const POLL_MS = 3000;
-    const TIMEOUT_MS = 72 * 60 * 60 * 1000; // 72 hours
-    let elapsed = 0;
-    let lastSize = -1;
-    let stableCount = 0;
-    const STABLE_NEEDED = 5; // 5 * 3s = 15 stable seconds = download complete
+    const TIMEOUT_MS = 72 * 60 * 60 * 1000;
+    let finalPath = path.join(destDir, expectedFilename);
+    let tempPath = path.join(destDir, expectedFilename + '.fdmdownload');
+
+    const fmt = (ms) => {
+      const s = Math.floor(ms / 1000);
+      return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+    };
 
     const timer = setInterval(() => {
-      elapsed += POLL_MS;
+      const elapsed = Date.now() - startedAt;
       if (elapsed > TIMEOUT_MS) {
         clearInterval(timer);
         return reject(new Error('FDM download timed out (72 hours exceeded)'));
       }
 
-      if (fs.existsSync(filePath)) {
-        try {
-          const size = fs.statSync(filePath).size;
-          if (onProgress) onProgress(size);
-          if (size > 0 && size === lastSize) {
-            if (++stableCount >= STABLE_NEEDED) {
-              clearInterval(timer);
-              return resolve({ destPath: filePath, filename: path.basename(filePath), size });
-            }
-          } else {
-            stableCount = 0;
-            lastSize = size;
+      try {
+        // ── Check if final file exists without a corresponding temp file ──
+        if (fs.existsSync(finalPath) && !fs.existsSync(tempPath)) {
+          const size = fs.statSync(finalPath).size;
+          if (size > 0) {
+            clearInterval(timer);
+            return resolve({ destPath: finalPath, filename: path.basename(finalPath), size });
           }
-        } catch (e) {}
-      } else {
-        stableCount = 0;
-      }
+        }
+
+        // ── Build progress string from temp file (pre-allocated size) ──
+        let allocatedStr = '';
+        let knownFinalPath = null;
+
+        const entries = fs.readdirSync(destDir);
+        for (const f of entries) {
+          const fp = path.join(destDir, f);
+          try {
+            const st = fs.statSync(fp);
+            if (!st.isFile() || st.mtimeMs < startedAt - 10000) continue;
+
+            if (isTemp(f)) {
+              // Show the pre-allocated size so user knows total expected
+              const gb = (st.size / 1024 / 1024 / 1024).toFixed(2);
+              allocatedStr = ` / ${gb} GB`;
+
+              // If the corresponding final file already appeared, track it
+              const stripped = stripTemp(f);
+              const possibleFinal = path.join(destDir, stripped);
+              if (fs.existsSync(possibleFinal) && !fs.existsSync(fp)) {
+                knownFinalPath = possibleFinal;
+              }
+            } else if (f !== path.basename(finalPath)) {
+              // FDM chose a different name — update our tracking path
+              finalPath = fp;
+              tempPath = fp + '.fdmdownload';
+            }
+          } catch (e) {}
+        }
+
+        if (knownFinalPath) {
+          finalPath = knownFinalPath;
+        }
+
+        if (onStatus) onStatus(`FDM downloading: ${path.basename(finalPath)} — ${fmt(elapsed)} elapsed${allocatedStr}`);
+
+      } catch (e) {}
     }, POLL_MS);
   });
 }
@@ -229,8 +306,6 @@ async function downloadWithFdm(fileUrl, destDir, onStatus, is1fichier = false) {
 
   if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
 
-  const sessions = parseInt(process.env.DOWNLOADER_SESSION || '3', 10);
-
   if (onStatus) onStatus('Resolving direct download URL...');
 
   let directUrl, filename;
@@ -252,20 +327,92 @@ async function downloadWithFdm(fileUrl, destDir, onStatus, is1fichier = false) {
 
   if (onStatus) onStatus(`Launching FDM: ${filename}`);
 
-  const cmd = `"${FDM_EXE}" /add "${directUrl}" /s /saveto "${destDir}" /filename "${filename}" /n ${sessions}`;
-  logger.info(`FDM command: fdm.exe /add [url] /s /saveto "${destDir}" /filename "${filename}" /n ${sessions}`);
+  // FDM CLI: -u <URL>  -s (silent/no confirmation)  --hidden (suppress window)
+  // Output folder and connections are controlled by FDM's own settings —
+  // configure FDM's default download folder to match DOWNLOAD_DIR.
+  const cmd = `"${FDM_EXE}" -u "${directUrl}" -s --hidden`;
+  logger.info(`FDM command: fdm.exe -u [url] -s --hidden`);
   execSync(cmd, { stdio: 'ignore' });
 
-  if (onStatus) onStatus(`FDM downloading: ${filename} (0 MB)`);
+  const startedAt = Date.now();
+  if (onStatus) onStatus(`FDM downloading: ${filename} — waiting for FDM to start...`);
 
-  const result = await pollForFile(destFilePath, (size) => {
-    if (onStatus) {
-      const mb = (size / 1024 / 1024).toFixed(1);
-      onStatus(`FDM downloading: ${filename} (${mb} MB)`);
-    }
-  });
+  const result = await pollForFile(destDir, filename, startedAt, onStatus);
 
   return result;
 }
 
-module.exports = { downloadWithFdm };
+/**
+ * Resolves direct URLs for all fileUrls, queues them all in FDM simultaneously
+ * (up to DOWNLOADER_SESSION at a time), then waits for every file concurrently.
+ *
+ * @returns {Promise<Array<{destPath,filename,size,fileUrl,skipped?}>>}
+ */
+async function downloadAllWithFdm(fileUrls, destDir, onStatus, is1fichier = false) {
+  if (!fs.existsSync(FDM_EXE)) throw new Error(`FDM not found at: ${FDM_EXE}`);
+  if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+
+  const maxConcurrent = parseInt(process.env.DOWNLOADER_SESSION || '3', 10);
+  const allResults = [];
+
+  // Process in batches of maxConcurrent
+  for (let i = 0; i < fileUrls.length; i += maxConcurrent) {
+    const batch = fileUrls.slice(i, i + maxConcurrent);
+    const batchLabel = fileUrls.length > maxConcurrent
+      ? ` (batch ${Math.floor(i / maxConcurrent) + 1}/${Math.ceil(fileUrls.length / maxConcurrent)})`
+      : '';
+
+    // ── 1. Resolve direct URLs for all files in batch ──────────────────────
+    if (onStatus) onStatus(`Resolving ${batch.length} URL(s)${batchLabel}...`);
+    const resolved = [];
+    for (const fileUrl of batch) {
+      let directUrl, filename;
+      if (is1fichier) {
+        ({ directUrl, filename } = await get1fichierDirectUrlAndFilename(fileUrl));
+      } else {
+        ({ directUrl, filename } = await resolveDatanodesDirectUrl(fileUrl));
+      }
+      filename = filename.replace(/[\\/:*?"<>|]/g, '_').trim() || 'downloaded_file';
+      resolved.push({ fileUrl, directUrl, filename });
+    }
+
+    // ── 2. Skip already-downloaded files ────────────────────────────────────
+    const toDownload = [];
+    for (const r of resolved) {
+      const destPath = path.join(destDir, r.filename);
+      if (fs.existsSync(destPath)) {
+        allResults.push({ fileUrl: r.fileUrl, destPath, filename: r.filename, size: fs.statSync(destPath).size, skipped: true });
+      } else {
+        toDownload.push(r);
+      }
+    }
+    if (toDownload.length === 0) continue;
+
+    // ── 3. Queue all in FDM simultaneously ──────────────────────────────────
+    const startedAt = Date.now();
+    for (const { directUrl, filename } of toDownload) {
+      const cmd = `"${FDM_EXE}" -u "${directUrl}" -s --hidden`;
+      logger.info(`FDM queued: ${filename}`);
+      execSync(cmd, { stdio: 'ignore' });
+    }
+
+    const names = toDownload.map(r => r.filename).join(', ');
+    if (onStatus) onStatus(`Queued in FDM: ${names} — waiting for completion${batchLabel}...`);
+
+    // ── 4. Poll for all files concurrently ──────────────────────────────────
+    const batchResults = await Promise.all(
+      toDownload.map((dl, idx) => {
+        const prefix = toDownload.length > 1 ? `[${idx + 1}/${toDownload.length}] ` : '';
+        return pollForFile(destDir, dl.filename, startedAt, (msg) => {
+          if (onStatus) onStatus(`${prefix}${msg}`);
+        }).then(r => ({ ...r, fileUrl: dl.fileUrl }));
+      })
+    );
+
+    allResults.push(...batchResults);
+  }
+
+  return allResults;
+}
+
+module.exports = { downloadWithFdm, downloadAllWithFdm };
