@@ -1,13 +1,16 @@
 const path = require('path');
 const fs = require('fs');
 const ora = require('ora');
-const { extractRarArchive, getGameInfoFromArchive, compressFolderTo7z, compressFileTo7z, findWorkingPassword } = require('../services/unrarService');
+const { extractRarArchive, getGameInfoFromArchive, compressFolderTo7z, compressFileTo7z, findWorkingPassword, sanitizeFileName } = require('../services/unrarService');
 const { addDownloadedGame } = require('../services/downloadedDb');
 const logger = require('./logger');
 
+// ── File-type helpers ──────────────────────────────────────────────────────────
+
 function isArchiveFile(file) {
   const lower = file.toLowerCase();
-  return lower.endsWith('.rar') || lower.endsWith('.zip') || lower.endsWith('.7z') || /\.r\d{2}$/.test(lower) || /\.z\d{2}$/.test(lower);
+  return lower.endsWith('.rar') || lower.endsWith('.zip') || lower.endsWith('.7z') ||
+         /\.r\d{2}$/.test(lower) || /\.z\d{2}$/.test(lower);
 }
 
 function checkIsSplitArchive(archiveFiles) {
@@ -26,10 +29,10 @@ function findMainArchiveFile(archiveFiles) {
     const lower = name.toLowerCase();
     return (lower.endsWith('.rar') && !lower.match(/\.part[2-9]\d*\.rar$/) && !lower.match(/\.part0[2-9]\d*\.rar$/)) ||
            (lower.endsWith('.zip') && !lower.match(/\.part[2-9]\d*\.zip$/) && !lower.match(/\.part0[2-9]\d*\.zip$/)) ||
-           (lower.endsWith('.7z') && !lower.match(/\.part[2-9]\d*\.7z$/) && !lower.match(/\.part0[2-9]\d*\.7z$/)) ||
+           (lower.endsWith('.7z')  && !lower.match(/\.part[2-9]\d*\.7z$/)  && !lower.match(/\.part0[2-9]\d*\.7z$/))  ||
            lower.includes('part1.rar') || lower.includes('part01.rar') ||
            lower.includes('part1.zip') || lower.includes('part01.zip') ||
-           lower.includes('part1.7z') || lower.includes('part01.7z');
+           lower.includes('part1.7z')  || lower.includes('part01.7z');
   });
   return candidate || archiveFiles[0];
 }
@@ -37,43 +40,262 @@ function findMainArchiveFile(archiveFiles) {
 function getUniqueFilePath(dir, baseName, ext, currentFilePath = null) {
   let filePath = path.join(dir, `${baseName}${ext}`);
   if (!fs.existsSync(filePath)) return filePath;
-  
-  if (currentFilePath && path.resolve(filePath) === path.resolve(currentFilePath)) {
-    return filePath;
-  }
-  
+  if (currentFilePath && path.resolve(filePath) === path.resolve(currentFilePath)) return filePath;
   let counter = 1;
   while (fs.existsSync(path.join(dir, `${baseName}_${counter}${ext}`))) {
     const checkPath = path.join(dir, `${baseName}_${counter}${ext}`);
-    if (currentFilePath && path.resolve(checkPath) === path.resolve(currentFilePath)) {
-      return checkPath;
-    }
+    if (currentFilePath && path.resolve(checkPath) === path.resolve(currentFilePath)) return checkPath;
     counter++;
   }
   return path.join(dir, `${baseName}_${counter}${ext}`);
 }
 
+// ── exFAT helpers ─────────────────────────────────────────────────────────────
+
+function findExfatInFolder(folderPath) {
+  try {
+    for (const entry of fs.readdirSync(folderPath)) {
+      const full = path.join(folderPath, entry);
+      if (entry.toLowerCase().endsWith('.exfat')) return full;
+      try {
+        if (fs.statSync(full).isDirectory()) {
+          const found = findExfatInFolder(full);
+          if (found) return found;
+        }
+      } catch (e) {}
+    }
+  } catch (e) {}
+  return null;
+}
+
 /**
- * Post-processes downloaded archive files:
- *   1. Reads param.json to get real title / PPSA / version
- *   2. Removes passwords / unpacks split archives, then recompresses clean
- *   3. Renames to standard `Title [PPSA][vXX.XX].rar` format
+ * Handles exFAT-region GAME archives:
+ *   - Detects encryption, extracts archive to temp folder
+ *   - Mounts the .exfat inside, validates via chkdsk, reads param.json
+ *   - If encrypted:     compress extracted .exfat → .7z, delete archives + temp
+ *   - If not encrypted: delete temp, rename original archive to standard name
+ *
+ * Returns { registeredFile: {fileName, type}, metadata: {titleId, titleName, version} }
+ */
+async function processExfatArchive({ archiveSet, type, downloadDir, password, initialTitle, initialPpsa, initialVer }) {
+  const mainFileName = findMainArchiveFile(archiveSet);
+  if (!mainFileName) return {};
+  const mainFilePath = path.join(downloadDir, mainFileName);
+
+  // 1. Detect working password
+  let workingPassword = '';
+  try {
+    workingPassword = await findWorkingPassword(mainFilePath, password ? [password] : []);
+  } catch (e) { /* no password needed */ }
+  const encrypted = workingPassword !== '';
+
+  // 2. Extract archive to temp folder
+  const tempFolder = path.join(downloadDir, `__exfat_tmp_${Date.now()}`);
+  const extractSpinner = ora(`[${type}] Extracting exFAT archive${encrypted ? ' (encrypted)' : ''}...`).start();
+  try {
+    await extractRarArchive(mainFilePath, tempFolder, workingPassword);
+    if (!fs.existsSync(tempFolder) || fs.readdirSync(tempFolder).length === 0) {
+      throw new Error('Extraction output is empty');
+    }
+    extractSpinner.succeed(`[${type}] Extracted`);
+  } catch (extErr) {
+    extractSpinner.fail(`[${type}] Extraction failed: ${extErr.message}`);
+    if (fs.existsSync(tempFolder)) fs.rmSync(tempFolder, { recursive: true, force: true });
+    throw extErr;
+  }
+
+  // 3. Find .exfat in extracted output
+  const exfatPath = findExfatInFolder(tempFolder);
+  if (!exfatPath) {
+    fs.rmSync(tempFolder, { recursive: true, force: true });
+    throw new Error(`No .exfat file found inside extracted archive "${mainFileName}"`);
+  }
+
+  // 4. Mount → chkdsk + param.json
+  const { mountValidateAndExtractParam } = require('../services/osfmountService');
+  const mountSpinner = ora(`[${type}] Mounting exFAT for validation and metadata...`).start();
+  let metadata = null;
+
+  try {
+    const result = await mountValidateAndExtractParam(exfatPath, (s) => {
+      mountSpinner.text = `[${type}] ${s}`;
+    });
+    metadata = result.metadata;
+
+    if (result.skipped) {
+      mountSpinner.warn(`[${type}] OSFMount not available — skipped validation`);
+    } else if (!result.valid) {
+      mountSpinner.fail(`[${type}] exFAT validation failed: ${result.message}`);
+      fs.rmSync(tempFolder, { recursive: true, force: true });
+      const err = new Error('exFAT validation failed: filesystem errors detected');
+      err.isExfatValidationError = true;
+      throw err;
+    } else {
+      const metaStr = metadata
+        ? `${metadata.titleName} [${metadata.titleId}] ${metadata.version}`
+        : '(no param.json)';
+      mountSpinner.succeed(`[${type}] Validated — ${metaStr}`);
+    }
+  } catch (mountErr) {
+    if (mountErr.isExfatValidationError) throw mountErr;
+    mountSpinner.warn(`[${type}] Validation error (continuing): ${mountErr.message}`);
+  }
+
+  // 5. Compute final names from param.json (fall back to initial values)
+  const realTitle = (metadata && metadata.titleName) || initialTitle;
+  const realPpsa  = (metadata && metadata.titleId)   || initialPpsa;
+  const realVer   = (metadata && metadata.version)   || initialVer;
+  const baseName  = `${sanitizeFileName(realTitle)} [${realPpsa}][${realVer}]`;
+
+  let registeredFile;
+
+  if (encrypted) {
+    // 6a. Encrypted: rename extracted .exfat → compress to .7z → cleanup
+    const renamedExfat = path.join(tempFolder, `${baseName}.exfat`);
+    if (path.resolve(exfatPath) !== path.resolve(renamedExfat)) {
+      fs.renameSync(exfatPath, renamedExfat);
+    }
+
+    const dest7zPath = path.join(downloadDir, `${baseName}.7z`);
+    const compressSpinner = ora(`[${type}] Compressing to ${baseName}.7z...`).start();
+    try {
+      await compressFileTo7z(renamedExfat, dest7zPath);
+      if (!fs.existsSync(dest7zPath) || fs.statSync(dest7zPath).size === 0) {
+        throw new Error('Output 7z is empty');
+      }
+      compressSpinner.succeed(`[${type}] Compressed: ${baseName}.7z`);
+      registeredFile = { fileName: `${baseName}.7z`, type };
+    } catch (compErr) {
+      compressSpinner.fail(`[${type}] Compression failed: ${compErr.message}`);
+      fs.rmSync(tempFolder, { recursive: true, force: true });
+      throw compErr;
+    }
+
+    // Delete original archives
+    for (const f of archiveSet) {
+      try { fs.unlinkSync(path.join(downloadDir, f)); } catch (e) {}
+    }
+    // Delete temp folder (contains the renamed .exfat)
+    try { fs.rmSync(tempFolder, { recursive: true, force: true }); } catch (e) {}
+
+  } else {
+    // 6b. Not encrypted: delete temp, rename original archive to standard name
+    try { fs.rmSync(tempFolder, { recursive: true, force: true }); } catch (e) {}
+
+    const origExt     = path.extname(mainFileName).toLowerCase();
+    const newFileName = `${baseName}${origExt}`;
+    try {
+      fs.renameSync(mainFilePath, path.join(downloadDir, newFileName));
+      logger.success(`[${type}] Renamed: ${newFileName}`);
+      registeredFile = { fileName: newFileName, type };
+    } catch (renameErr) {
+      logger.warn(`[${type}] Rename failed: ${renameErr.message}`);
+      registeredFile = { fileName: mainFileName, type };
+    }
+  }
+
+  return { registeredFile, metadata };
+}
+
+/**
+ * Handles a raw .exfat file in an exFAT-region GAME download:
+ *   - Mounts → chkdsk + param.json
+ *   - Renames .exfat to standard name using real metadata
+ *   - Compresses to .7z (source .exfat deleted after)
+ *
+ * Returns { registeredFile, metadata }
+ */
+async function processRawExfat({ filename, type, downloadDir, initialTitle, initialPpsa, initialVer }) {
+  const currentPath = path.join(downloadDir, filename);
+  const { mountValidateAndExtractParam } = require('../services/osfmountService');
+
+  const mountSpinner = ora(`[${type}] Mounting exFAT "${filename}" for validation and metadata...`).start();
+  let metadata = null;
+
+  try {
+    const result = await mountValidateAndExtractParam(currentPath, (s) => {
+      mountSpinner.text = `[${type}] ${s}`;
+    });
+    metadata = result.metadata;
+
+    if (result.skipped) {
+      mountSpinner.warn(`[${type}] OSFMount not available — skipped validation`);
+    } else if (!result.valid) {
+      mountSpinner.fail(`[${type}] exFAT validation failed: ${result.message}`);
+      const err = new Error('exFAT validation failed: filesystem errors detected');
+      err.isExfatValidationError = true;
+      throw err;
+    } else {
+      const metaStr = metadata
+        ? `${metadata.titleName} [${metadata.titleId}] ${metadata.version}`
+        : '(no param.json)';
+      mountSpinner.succeed(`[${type}] Validated — ${metaStr}`);
+    }
+  } catch (mountErr) {
+    if (mountErr.isExfatValidationError) throw mountErr;
+    mountSpinner.warn(`[${type}] Validation error (continuing): ${mountErr.message}`);
+  }
+
+  // Compute final names
+  const realTitle = (metadata && metadata.titleName) || initialTitle;
+  const realPpsa  = (metadata && metadata.titleId)   || initialPpsa;
+  const realVer   = (metadata && metadata.version)   || initialVer;
+  const baseName  = `${sanitizeFileName(realTitle)} [${realPpsa}][${realVer}]`;
+
+  // Rename .exfat to standard name
+  const renamedPath = getUniqueFilePath(downloadDir, baseName, '.exfat', currentPath);
+  try {
+    if (path.resolve(currentPath) !== path.resolve(renamedPath)) {
+      fs.renameSync(currentPath, renamedPath);
+    }
+  } catch (e) {
+    logger.warn(`[${type}] Rename failed: ${e.message}`);
+  }
+
+  // Compress to .7z
+  const dest7zPath = path.join(downloadDir, `${baseName}.7z`);
+  const compressSpinner = ora(`[${type}] Compressing to ${baseName}.7z...`).start();
+  try {
+    await compressFileTo7z(renamedPath, dest7zPath);
+    if (!fs.existsSync(dest7zPath) || fs.statSync(dest7zPath).size === 0) {
+      throw new Error('Output 7z is empty');
+    }
+    compressSpinner.succeed(`[${type}] Compressed: ${baseName}.7z`);
+    // Source .exfat is now inside the .7z — remove it
+    try { fs.unlinkSync(renamedPath); } catch (e) {}
+    return { registeredFile: { fileName: `${baseName}.7z`, type }, metadata };
+  } catch (compErr) {
+    compressSpinner.fail(`[${type}] Compression failed: ${compErr.message}. Keeping .exfat.`);
+    return { registeredFile: { fileName: path.basename(renamedPath), type }, metadata };
+  }
+}
+
+// ── Main post-processor ────────────────────────────────────────────────────────
+
+/**
+ * Post-processes downloaded files:
+ *   1. Reads param.json for real title / PPSA / version
+ *   2. Removes passwords / unpacks splits, recompresses clean
+ *   3. Renames to standard `Title [PPSA][vXX.XX]` format
  *   4. Registers in downloaded.xml
  *
- * @param {{
- *   downloadedFiles: Array<{filename: string, type: string}>,
- *   downloadDir: string,
- *   password?: string,
- *   hostName?: string,
- *   region?: string,
- *   initialTitle?: string,
- *   initialPpsa?: string
- * }} opts
+ * For exFAT-region GAME files, uses OSFMount to mount the .exfat image,
+ * validate via chkdsk, and extract param.json for real metadata.
  */
-async function processDownloadedFiles({ downloadedFiles, downloadDir, password = '', hostName = 'Unknown', region = 'Unknown', initialTitle = 'Unknown Game', initialPpsa = 'Unknown' }) {
+async function processDownloadedFiles({
+  downloadedFiles,
+  downloadDir,
+  password = '',
+  hostName = 'Unknown',
+  region = 'Unknown',
+  initialTitle = 'Unknown Game',
+  initialPpsa = 'Unknown'
+}) {
   let finalTitle = initialTitle;
-  let finalPpsa = initialPpsa;
-  let finalVer = 'v01.00';
+  let finalPpsa  = initialPpsa;
+  let finalVer   = 'v01.00';
+
+  const isExfatRegion = (region || '').toUpperCase().includes('EXFAT');
 
   // Group files by type
   const fileGroups = {};
@@ -85,24 +307,28 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
     fileGroups[type].push(fileItem.filename);
   }
 
-  // Read metadata from the GAME archive first so all group names use the real title/PPSA
-  const gameArchives = (fileGroups['GAME'] || []).filter(isArchiveFile);
-  if (gameArchives.length > 0) {
-    const mainFilePath = path.join(downloadDir, findMainArchiveFile(gameArchives));
-    const checkSpinner = ora(`Inspecting "${path.basename(mainFilePath)}" internally...`).start();
-    try {
-      const gameInfo = await getGameInfoFromArchive(mainFilePath, password);
-      finalPpsa = gameInfo.titleId;
-      finalVer = gameInfo.version;
-      finalTitle = gameInfo.titleName;
-      checkSpinner.succeed(`Read metadata: ${finalTitle} [${finalPpsa}] ${finalVer}`);
-    } catch (err) {
-      checkSpinner.warn(`Failed to read param.json: ${err.message}. Using fallback metadata.`);
+  // For non-exFAT regions, read metadata from the GAME archive before processing
+  // (exFAT archives don't contain param.json at the archive root — it lives inside the .exfat image)
+  if (!isExfatRegion) {
+    const gameArchives = (fileGroups['GAME'] || []).filter(isArchiveFile);
+    if (gameArchives.length > 0) {
+      const mainFilePath = path.join(downloadDir, findMainArchiveFile(gameArchives));
+      const checkSpinner = ora(`Inspecting "${path.basename(mainFilePath)}" internally...`).start();
+      try {
+        const gameInfo = await getGameInfoFromArchive(mainFilePath, password);
+        finalPpsa  = gameInfo.titleId;
+        finalVer   = gameInfo.version;
+        finalTitle = gameInfo.titleName;
+        checkSpinner.succeed(`Read metadata: ${finalTitle} [${finalPpsa}] ${finalVer}`);
+      } catch (err) {
+        checkSpinner.warn(`Failed to read param.json: ${err.message}. Using fallback metadata.`);
+      }
     }
   }
 
   const registeredFiles = [];
 
+  // ── Generic archive processor (non-exFAT path) ────────────────────────────
   const processArchiveSet = async (archiveSet, groupType, baseNameLabel) => {
     const mainFileName = findMainArchiveFile(archiveSet);
     if (!mainFileName) return;
@@ -110,12 +336,11 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
 
     let workingPassword = '';
     try {
-      const pwdCandidates = password ? [password] : [];
-      workingPassword = await findWorkingPassword(mainFilePath, pwdCandidates);
+      workingPassword = await findWorkingPassword(mainFilePath, password ? [password] : []);
     } catch (e) { /* ignore */ }
 
-    const isSplit = checkIsSplitArchive(archiveSet);
-    const encrypted = workingPassword !== '';
+    const isSplit    = checkIsSplitArchive(archiveSet);
+    const encrypted  = workingPassword !== '';
 
     if (encrypted || isSplit) {
       const extractSpinner = ora(`[${groupType}] Extracting "${mainFileName}" (encrypted/split)...`).start();
@@ -136,11 +361,11 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
         }
         deleteSpinner.succeed(`[${groupType}] Cleaned up.`);
 
-        const destRarPath = path.join(downloadDir, `${baseNameLabel}.7z`);
+        const dest7zPath   = path.join(downloadDir, `${baseNameLabel}.7z`);
         const compressSpinner = ora(`[${groupType}] Recompressing to ${baseNameLabel}.7z...`).start();
-        await compressFolderTo7z(outputFolderPath, destRarPath);
-        if (!fs.existsSync(destRarPath) || fs.statSync(destRarPath).size === 0) {
-          throw new Error(`Recompressed 7z is empty: ${destRarPath}`);
+        await compressFolderTo7z(outputFolderPath, dest7zPath);
+        if (!fs.existsSync(dest7zPath) || fs.statSync(dest7zPath).size === 0) {
+          throw new Error(`Recompressed 7z is empty: ${dest7zPath}`);
         }
         compressSpinner.succeed(`[${groupType}] Recompressed: ${baseNameLabel}.7z`);
         registeredFiles.push({ fileName: `${baseNameLabel}.7z`, type: groupType });
@@ -157,7 +382,7 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
         throw cleanErr;
       }
     } else {
-      const origExt = path.extname(mainFileName).toLowerCase();
+      const origExt     = path.extname(mainFileName).toLowerCase();
       const newFileName = `${baseNameLabel}${origExt}`;
       try {
         fs.renameSync(path.join(downloadDir, mainFileName), path.join(downloadDir, newFileName));
@@ -170,13 +395,48 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
     }
   };
 
+  // ── Process each file type group ──────────────────────────────────────────
   for (const [type, files] of Object.entries(fileGroups)) {
-    const archives = files.filter(isArchiveFile);
+    const archives   = files.filter(isArchiveFile);
     const extraFiles = files.filter(f => !isArchiveFile(f));
-    const isGame = type === 'GAME';
+    const isGame     = type === 'GAME';
+
+    // ── exFAT region GAME: dedicated pipeline ─────────────────────────────
+    if (isGame && isExfatRegion) {
+      if (archives.length > 0) {
+        const { registeredFile, metadata } = await processExfatArchive({
+          archiveSet: archives, type, downloadDir, password,
+          initialTitle: finalTitle, initialPpsa: finalPpsa, initialVer: finalVer
+        });
+        if (metadata) {
+          if (metadata.titleId)   finalPpsa  = metadata.titleId;
+          if (metadata.titleName) finalTitle = metadata.titleName;
+          if (metadata.version)   finalVer   = metadata.version;
+        }
+        if (registeredFile) registeredFiles.push(registeredFile);
+      }
+
+      const rawExfats = extraFiles.filter(f => f.toLowerCase().endsWith('.exfat'));
+      for (const rawFile of rawExfats) {
+        const { registeredFile, metadata } = await processRawExfat({
+          filename: rawFile, type, downloadDir,
+          initialTitle: finalTitle, initialPpsa: finalPpsa, initialVer: finalVer
+        });
+        if (metadata) {
+          if (metadata.titleId)   finalPpsa  = metadata.titleId;
+          if (metadata.titleName) finalTitle = metadata.titleName;
+          if (metadata.version)   finalVer   = metadata.version;
+        }
+        if (registeredFile) registeredFiles.push(registeredFile);
+      }
+
+      continue; // skip generic processing for this group
+    }
+
+    // ── Standard processing ───────────────────────────────────────────────
     const baseName = isGame
-      ? `${finalTitle} [${finalPpsa}][${finalVer}]`
-      : `${finalTitle} [${finalPpsa}][${type}]`;
+      ? `${sanitizeFileName(finalTitle)} [${finalPpsa}][${finalVer}]`
+      : `${sanitizeFileName(finalTitle)} [${finalPpsa}][${type}]`;
 
     if (archives.length > 0) {
       if (checkIsSplitArchive(archives) || isGame) {
@@ -190,15 +450,14 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
     }
 
     for (const file of extraFiles) {
-      const ext = path.extname(file).toLowerCase();
+      const ext    = path.extname(file).toLowerCase();
       const isText = ['.txt', '.pdf', '.jpg', '.jpeg', '.png', '.md', '.htm', '.html'].includes(ext);
 
-      // Non-archive GAME files (e.g. .exfat raw images) get wrapped in 7z before registering
       if (isGame && !isText) {
-        const dest7zPath = path.join(downloadDir, `${baseName}.7z`);
+        const dest7zPath     = path.join(downloadDir, `${baseName}.7z`);
         const compressSpinner = ora(`[${type}] Renaming and compressing "${file}" to 7z...`).start();
-        const currentPath = path.join(downloadDir, file);
-        const renamedPath = path.join(downloadDir, `${baseName}${ext}`);
+        const currentPath    = path.join(downloadDir, file);
+        const renamedPath    = path.join(downloadDir, `${baseName}${ext}`);
         let actualRenamedPath = renamedPath;
 
         try {
@@ -207,7 +466,7 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
             fs.renameSync(currentPath, actualRenamedPath);
           }
 
-          // Validate exFAT filesystem via OSFMount + chkdsk before compressing
+          // Non-exFAT-region raw .exfat: validate only (no metadata extraction needed here)
           if (ext === '.exfat') {
             const { validateExfat } = require('../services/osfmountService');
             compressSpinner.text = `[${type}] Validating exFAT filesystem...`;
@@ -230,21 +489,19 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
           if (!fs.existsSync(dest7zPath) || fs.statSync(dest7zPath).size === 0) {
             throw new Error('Output 7z is empty.');
           }
-
           compressSpinner.succeed(`[${type}] Renamed and compressed to: ${baseName}.7z`);
           registeredFiles.push({ fileName: `${baseName}.7z`, type });
         } catch (compErr) {
           if (compErr.isExfatValidationError) {
             compressSpinner.fail(`[${type}] exFAT validation failed — filesystem errors detected`);
-            throw compErr; // propagate: download.js will rename .exfat → .failed
+            throw compErr;
           }
           compressSpinner.fail(`[${type}] Processing failed: ${compErr.message}. Keeping original file.`);
-          const finalName = path.basename(actualRenamedPath);
-          registeredFiles.push({ fileName: finalName, type });
+          registeredFiles.push({ fileName: path.basename(actualRenamedPath), type });
         }
       } else {
         const currentPath = path.join(downloadDir, file);
-        const newPath = getUniqueFilePath(downloadDir, baseName, ext, currentPath);
+        const newPath     = getUniqueFilePath(downloadDir, baseName, ext, currentPath);
         const newFileName = path.basename(newPath);
         try {
           if (path.resolve(currentPath) !== path.resolve(newPath)) {
@@ -260,8 +517,9 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
     }
   }
 
+  // ── Register in downloaded.xml ────────────────────────────────────────────
   const titleToRegister = (initialTitle && initialTitle !== 'Unknown Game') ? initialTitle : finalTitle;
-  const gameToRegister = registeredFiles.find(rf => rf.type === 'GAME');
+  const gameToRegister  = registeredFiles.find(rf => rf.type === 'GAME');
   const otherToRegister = registeredFiles.filter(rf => rf.type !== 'GAME');
 
   if (gameToRegister) {

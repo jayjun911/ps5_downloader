@@ -402,17 +402,38 @@ async function downloadCommand(titleQuery, options = {}) {
       }
 
       const count = Math.min(limit, tbdList.length);
-      logger.info(`Starting batch download of ${count} games sequentially...`);
+      const useFdmBatch = !!(process.env.DOWNLOAD_MANAGER || '').trim();
+      const maxConcurrentGames = useFdmBatch
+        ? parseInt(process.env.DOWNLOADER_PARALLEL_GAME_PARSING || '1', 10)
+        : 1;
+      const modeLabel = useFdmBatch ? `FDM, up to ${maxConcurrentGames} games concurrent` : 'sequential';
+      logger.info(`Starting batch download of ${count} games [${modeLabel}]...`);
 
-      for (let i = 0; i < count; i++) {
-        const game = tbdList[i];
-        console.log(chalk.bold.magenta(`\n=== Batch [${i + 1}/${count}]: ${game.title} ===`));
-        try {
-          await downloadSingleGame(game, options);
-        } catch (e) {
-          logger.error(`Skipping batch item "${game.title}" due to error.`);
+      // Rolling window: as soon as one game finishes, the next starts immediately
+      let nextIdx = 0;
+      let active = 0;
+      await new Promise((resolveAll) => {
+        function startNext() {
+          while (active < maxConcurrentGames && nextIdx < count) {
+            const game = tbdList[nextIdx];
+            const slotNum = nextIdx + 1;
+            nextIdx++;
+            active++;
+            console.log(chalk.bold.magenta(`\n=== [${slotNum}/${count}] Starting: ${game.title} ===`));
+            downloadSingleGame(game, options)
+              .catch(e => { logger.error(`Skipping "${game.title}": ${e.message}`); })
+              .finally(() => {
+                active--;
+                if (active === 0 && nextIdx >= count) {
+                  resolveAll();
+                } else {
+                  startNext();
+                }
+              });
+          }
         }
-      }
+        startNext();
+      });
       logger.success('\nBatch download job finished.');
       return;
     }

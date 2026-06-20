@@ -758,5 +758,6 @@ module.exports = {
   compressFileTo7z,
   compressFolderToRar,
   compressFileToRar,
-  findWorkingPassword
+  findWorkingPassword,
+  sanitizeFileName
 };

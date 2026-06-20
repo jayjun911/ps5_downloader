@@ -8,131 +8,134 @@ function getOsfMountPath() {
 }
 
 function findFreeDriveLetter() {
-  try {
-    const output = execSync('wmic logicaldisk get caption', {
-      encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore']
-    });
-    const used = new Set((output.match(/[A-Z]:/g) || []).map(s => s.toUpperCase()));
-    // Search from V: downward to avoid conflicting with common drive letters
-    for (let c = 'V'.charCodeAt(0); c >= 'D'.charCodeAt(0); c--) {
-      const letter = String.fromCharCode(c) + ':';
-      if (!used.has(letter)) return letter;
-    }
-  } catch (e) { /* fall through */ }
+  // fs.existsSync('V:\\') returns false when the drive is not mounted — no wmic needed
+  for (let c = 'V'.charCodeAt(0); c >= 'D'.charCodeAt(0); c--) {
+    const letter = String.fromCharCode(c) + ':';
+    if (!fs.existsSync(letter + '\\')) return letter;
+  }
   throw new Error('No free drive letter available for OSFMount');
 }
 
-function parseUnitNumber(output) {
-  // "Virtual disk #0", "disk #0", "unit 0", "Unit: 0"
-  let m = output.match(/(?:virtual\s+disk\s+|disk\s+|unit[:\s]+)#?(\d+)/i);
-  if (m) return parseInt(m[1], 10);
-  m = output.match(/#(\d+)/);
-  if (m) return parseInt(m[1], 10);
-  return null;
-}
-
-function getUnitByFile(osfPath, exfatFilePath) {
+function dismount(osfPath, driveLetter) {
   try {
-    const listOutput = execSync(`"${osfPath}" -l`, {
-      encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore']
+    execSync(`"${osfPath}" -d -m ${driveLetter}`, {
+      stdio: ['pipe', 'pipe', 'ignore'], timeout: 15000, windowsHide: true
     });
-    const needle = path.basename(exfatFilePath).toLowerCase();
-    for (const line of listOutput.split(/\r?\n/)) {
-      if (line.toLowerCase().includes(needle)) {
-        const m = line.match(/\b(\d+)\b/);
-        if (m) return parseInt(m[1], 10);
-      }
-    }
-  } catch (e) { /* unable to list */ }
-  return null;
-}
-
-function dismount(osfPath, unitNumber) {
-  try {
-    execSync(`"${osfPath}" -d -u ${unitNumber}`, {
-      stdio: ['pipe', 'pipe', 'ignore'], timeout: 15000
-    });
-    logger.info(`OSFMount: dismounted unit ${unitNumber}`);
   } catch (e) {
-    logger.warn(`OSFMount dismount (unit ${unitNumber}) failed: ${e.message}`);
+    // Retry with force dismount if regular dismount fails (volume may still be locked)
+    try {
+      execSync(`"${osfPath}" -D -m ${driveLetter}`, {
+        stdio: ['pipe', 'pipe', 'ignore'], timeout: 15000, windowsHide: true
+      });
+    } catch (e2) {
+      logger.warn(`OSFMount dismount (${driveLetter}) failed: ${e2.message}`);
+    }
   }
 }
 
+function parseParamJson(driveLetter) {
+  try {
+    const paramPath = path.join(driveLetter + '\\', 'sce_sys', 'param.json');
+    const raw = fs.readFileSync(paramPath, 'utf-8');
+    const json = JSON.parse(raw);
+
+    const defLang = (json.localizedParameters && json.localizedParameters.defaultLanguage) || 'en-US';
+    // Try defaultLanguage first, then en-US, then any available locale
+    const locParams = json.localizedParameters || {};
+    const locale = locParams[defLang] || locParams['en-US'] || Object.values(locParams).find(v => v && v.titleName) || {};
+
+    return {
+      titleId:   (json.titleId || '').trim(),
+      titleName: (locale.titleName || '').trim(),
+      version:   json.applicationVersion ? `v${json.applicationVersion}` : 'v01.00'
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+function runChkdsk(driveLetter) {
+  let output = '';
+  try {
+    output = execSync(`chkdsk ${driveLetter}`, {
+      encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 120000
+    });
+  } catch (chkErr) {
+    // chkdsk exits non-zero on read-only mounts even when the filesystem is clean
+    // (can't update the "last run" timestamp). Judge by output text, not exit code.
+    output = ((chkErr.stdout || '') + (chkErr.stderr || '')).trim() || chkErr.message;
+  }
+
+  const valid = output.toLowerCase().includes('found no problems');
+
+  if (!valid) logger.warn(`chkdsk full output:\n${output}`);
+
+  const summary = output.split(/\r?\n/).filter(l => l.trim()).join(' | ');
+  return { valid, message: summary };
+}
+
 /**
- * Mounts an exFAT disk image read-only via OSFMount, runs chkdsk for filesystem
- * validation, then dismounts. Returns { valid, message, skipped }.
+ * Mounts an exFAT disk image read-only via OSFMount, reads sce_sys/param.json
+ * for real game metadata, and runs chkdsk for filesystem validation.
  *
- * Skips silently (valid:true, skipped:true) when OSFMount is not installed.
- * Throws when OSFMount is present but mounting itself fails.
+ * Returns { valid, metadata, message, skipped }
+ *   metadata: { titleId, titleName, version } or null if param.json unreadable
+ *   skipped: true when OSFMount is not installed (treat as valid, no metadata)
+ *
+ * Throws only when OSFMount is installed but mounting itself fails.
  */
-async function validateExfat(exfatFilePath, onStatus) {
+async function mountValidateAndExtractParam(exfatFilePath, onStatus) {
   const osfPath = getOsfMountPath();
 
   if (!fs.existsSync(osfPath)) {
-    logger.warn(`OSFMount not found at: ${osfPath} — skipping exFAT validation.`);
-    return { valid: true, skipped: true };
+    logger.warn(`OSFMount not found at: ${osfPath} — skipping validation.`);
+    return { valid: true, skipped: true, metadata: null, message: '' };
   }
 
   let driveLetter;
   try {
     driveLetter = findFreeDriveLetter();
   } catch (e) {
-    logger.warn(`Cannot allocate drive letter for OSFMount: ${e.message} — skipping validation.`);
-    return { valid: true, skipped: true };
+    logger.warn(`No free drive letter for OSFMount — skipping validation.`);
+    return { valid: true, skipped: true, metadata: null, message: '' };
   }
 
   if (onStatus) onStatus(`Mounting exFAT at ${driveLetter} (read-only)...`);
 
-  let mountOutput = '';
   try {
-    mountOutput = execSync(
-      `"${osfPath}" -a -t file -f "${exfatFilePath}" -d ${driveLetter} -o ro`,
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 30000 }
+    execSync(
+      `"${osfPath}" -a -t file -f "${exfatFilePath}" -m ${driveLetter} -o ro`,
+      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 120000, windowsHide: true }
     );
   } catch (err) {
     const errOut = (err.stdout || '') + (err.stderr || '');
     throw new Error(`OSFMount mount failed: ${errOut.trim() || err.message}`);
   }
 
-  let unitNumber = parseUnitNumber(mountOutput);
-  if (unitNumber === null) unitNumber = getUnitByFile(osfPath, exfatFilePath);
-  if (unitNumber === null) unitNumber = 0;
-
-  // Give Windows time to register the new volume
+  // Give Windows time to register the volume before accessing it
   await new Promise(r => setTimeout(r, 2000));
 
+  // ── Read param.json ────────────────────────────────────────────────────────
+  if (onStatus) onStatus(`Reading sce_sys/param.json from ${driveLetter}...`);
+  const metadata = parseParamJson(driveLetter);
+  if (!metadata) logger.warn(`param.json not found or unreadable on ${driveLetter}`);
+
+  // ── chkdsk ────────────────────────────────────────────────────────────────
   if (onStatus) onStatus(`Running chkdsk ${driveLetter}...`);
+  const { valid, message } = runChkdsk(driveLetter);
 
-  let valid = false;
-  let message = '';
+  dismount(osfPath, driveLetter);
 
-  try {
-    const chkOut = execSync(`chkdsk ${driveLetter}`, {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 120000
-    });
-    message = chkOut.trim();
-    const lower = message.toLowerCase();
-    valid = !lower.includes('found errors') &&
-            !lower.includes('found problems') &&
-            !lower.includes('corrupt') &&
-            !lower.includes('unrecoverable');
-  } catch (chkErr) {
-    message = ((chkErr.stdout || '') + (chkErr.stderr || '')).trim() || chkErr.message;
-    const exitCode = chkErr.status;
-    // exit 0 = clean, exit 2 = disk cleanup (minor, still usable), exit 3 = unrecoverable
-    valid = exitCode === 0 || exitCode === 2;
-    if (exitCode === 3) valid = false;
-    const lower = message.toLowerCase();
-    if (lower.includes('unrecoverable') || lower.includes('found errors')) valid = false;
-  }
-
-  dismount(osfPath, unitNumber);
-
-  // Return last few lines of chkdsk output as summary
-  const summary = message.split(/\r?\n/).filter(l => l.trim()).slice(-4).join(' | ');
-  return { valid, message: summary };
+  return { valid, metadata, message, skipped: false };
 }
 
-module.exports = { validateExfat };
+/**
+ * Thin wrapper — validates only (no metadata needed).
+ * Returns { valid, message, skipped }.
+ */
+async function validateExfat(exfatFilePath, onStatus) {
+  const { valid, message, skipped } = await mountValidateAndExtractParam(exfatFilePath, onStatus);
+  return { valid, message, skipped };
+}
+
+module.exports = { mountValidateAndExtractParam, validateExfat };

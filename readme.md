@@ -32,8 +32,14 @@ Required for re-compression. Must be installed at:
 `C:\Program Files\Bandizip\bz.exe`
 
 ### Free Download Manager (optional)
-Required only when `DOWNLOAD_MANAGER=FDM`. Default path:
+Required only when `DOWNLOAD_MANAGER` is set. Default path:
 `C:\Program Files\Softdeluxe\Free Download Manager\fdm.exe`
+
+Configure FDM's default download folder to match `DOWNLOAD_DIR` in your `.env`.
+
+### OSFMount (optional)
+Required for exFAT region downloads. Used to mount `.exfat` disk images for filesystem validation (`chkdsk`) and metadata extraction (`sce_sys/param.json`). Default path:
+`C:\Program Files\OSFMount\OSFMount.exe`
 
 ---
 
@@ -50,14 +56,22 @@ DOWNLOAD_DIR=C:\Z
 CACHE_TTL_HOURS=24
 
 # Your PS5 firmware major version (used for backport filtering)
-# Sections that require higher firmware than this value are skipped
+# Sections requiring higher firmware than this value are skipped
 USER_FIRMWARE=7
 
-# Download manager: leave empty to use built-in streamer, set to FDM for Free Download Manager
-DOWNLOAD_MANAGER=
+# Path to Free Download Manager executable (leave empty to use built-in streamer)
+DOWNLOAD_MANAGER=C:\Program Files\Softdeluxe\Free Download Manager\fdm.exe
 
-# Number of concurrent connections when using FDM
-DOWNLOADER_SESSION=3
+# [FDM mode] Number of games to process concurrently in batch downloads (default: 1)
+DOWNLOADER_PARALLEL_GAME_PARSING=1
+
+# [FDM mode] Max simultaneous files queued in FDM per game (default: 3)
+# URL tokens are resolved immediately before queuing to avoid expiry.
+# Increase only if your connection handles many concurrent large downloads.
+DOWNLOADER_SIMUL_DOWN_LIMIT=3
+
+# Path to OSFMount executable (for exFAT region validation)
+OSFMOUNT_PATH=C:\Program Files\OSFMount\OSFMount.exe
 ```
 
 *Note: `UnRAR.exe` is auto-downloaded and placed in `bin/` on first run — no manual setup needed.*
@@ -119,6 +133,8 @@ ps5dl download "Game Title" --password "custom_password"
 ps5dl download "Game Title" --completed
 ```
 
+**Batch + FDM mode:** When `DOWNLOAD_MANAGER` is set, `--limit` runs `DOWNLOADER_PARALLEL_GAME_PARSING` games concurrently using a rolling window — as soon as one game finishes, the next starts immediately.
+
 ---
 
 ### `ps5dl urldown <url>`
@@ -147,8 +163,8 @@ Exclude games from batch downloads.
 
 ```bash
 ps5dl exclude                            # List all excluded
-ps5dl exclude "Game Title"              # Add to exclusion list
-ps5dl exclude "Game Title" --remove     # Remove from exclusion list
+ps5dl exclude "Game Title"               # Add to exclusion list
+ps5dl exclude "Game Title" --remove      # Remove from exclusion list
 ```
 
 ---
@@ -178,9 +194,9 @@ Sections are tried in this order: **KOR (exFAT) → KOR → USA (exFAT) → EUR 
 
 ### Backport Filtering
 For each section, the tool checks the content for `"Works on X.xx and higher"` notes:
-- If the required firmware ≤ `USER_FIRMWARE` → compatible, use this section
-- If the required firmware > `USER_FIRMWARE` → incompatible, skip to next section
-- If no note is found → fall back to region-name heuristic
+- Required firmware ≤ `USER_FIRMWARE` → compatible, use this section
+- Required firmware > `USER_FIRMWARE` → incompatible, skip to next section
+- No note found → fall back to region-name heuristic
 
 **Example** (`USER_FIRMWARE=7`):
 - Section: `"Works on 9.xx and higher"` → skip
@@ -193,27 +209,44 @@ For each section, the tool checks the content for `"Works on X.xx and higher"` n
 4. **Dead Link Retry**: If a link is dead (404), skips that host and retries the same section with the next best host.
 5. **Download**:
    - *Built-in*: Streams directly via 1fichier API or Datanodes multi-step flow.
-   - *FDM mode* (`DOWNLOAD_MANAGER=FDM`): Resolves direct URL first, then hands off to Free Download Manager CLI and polls until the file is stable.
+   - *FDM mode* (`DOWNLOAD_MANAGER` set): For each file, resolves the direct URL immediately before queuing in FDM (prevents token expiry). Polls via `.fdmdownload` temp file disappearance. Up to `DOWNLOADER_SIMUL_DOWN_LIMIT` files download simultaneously per game; all must complete before post-processing begins.
 6. **exFAT failure handling**: If an exFAT section download fails, any partial `.exfat` file is renamed to `.failed` and the game is skipped entirely (no fallback to other sections).
 
 ### Post-processing Flow
-After successful download:
+
+#### Standard regions (non-exFAT)
 1. **Metadata**: Extracts `param.json` from the archive to get real `titleName`, `PPSA`, `version`.
-2. **Password detection**: Tests archive with no password, then tries `DLPSGAME.COM`, `dlpsgame.com`, and any scraped password.
+2. **Password detection**: Tests with no password, then tries `DLPSGAME.COM`, `dlpsgame.com`, and any scraped password.
 3. **If encrypted or split**:
    - Extract with UnRAR/7z
-   - Flatten folder structure so `eboot.bin` is at the root
    - Delete original archive(s)
    - Recompress with Bandizip: `bz a -r -fmt:7z -l:7 "output.7z"`
 4. **If not encrypted**: Rename to `{Title} [PPSA][vXX.XX]{ext}` and keep as-is.
-5. **exFAT / raw files**: Compressed into `.7z` via Bandizip.
-6. **Registration**: Records the final filename in `data/downloaded.xml`.
+5. **Registration**: Records the final filename in `data/downloaded.xml`.
+
+#### exFAT regions
+exFAT disk images contain the PS5 filesystem directly. `param.json` is inside the image, so OSFMount is used instead of archive inspection.
+
+**Archive path** (`.rar`/`.zip` wrapping an `.exfat`):
+1. Detect encryption and extract archive to a temp folder.
+2. Find the `.exfat` file inside the extracted output.
+3. Mount read-only via OSFMount → run `chkdsk` → read `sce_sys/param.json` for real metadata → dismount.
+4. If validation fails → abort with error.
+5. **If encrypted**: rename `.exfat` and recompress to a clean, password-free `.7z`. Delete original archives and temp folder.
+6. **If not encrypted**: delete temp folder, rename original archive to standard name.
+
+**Raw `.exfat` path** (direct disk image download):
+1. Mount read-only → `chkdsk` + `sce_sys/param.json` → dismount.
+2. Rename `.exfat` to standard name using real metadata.
+3. Compress to `.7z` via Bandizip. Delete source `.exfat`.
 
 ### Final File Naming
 | Scenario | Result |
 |----------|--------|
 | Encrypted/split archive | `{Title} [PPSA][ver].7z` |
 | Clean archive (no password) | `{Title} [PPSA][ver]{.rar/.zip/.7z}` |
+| exFAT (encrypted archive) | `{Title} [PPSA][ver].7z` |
+| exFAT (non-encrypted archive) | `{Title} [PPSA][ver].rar` |
 | exFAT raw image | `{Title} [PPSA][ver].7z` |
 | DLC, UNLOCK, UPDATE | `{Title} [PPSA][TYPE]{ext}` |
 | Failed exFAT download | `original_name.failed` |
@@ -249,8 +282,14 @@ After successful download:
 `C:\Program Files\Bandizip\bz.exe`
 
 ### Free Download Manager (선택 사항)
-`DOWNLOAD_MANAGER=FDM` 설정 시에만 필요합니다. 기본 경로:
+`DOWNLOAD_MANAGER` 설정 시에만 필요합니다. 기본 경로:
 `C:\Program Files\Softdeluxe\Free Download Manager\fdm.exe`
+
+FDM의 기본 다운로드 폴더를 `.env`의 `DOWNLOAD_DIR`와 동일하게 설정해야 합니다.
+
+### OSFMount (선택 사항)
+exFAT 리전 다운로드 시 필요합니다. `.exfat` 디스크 이미지를 마운트하여 `chkdsk` 검증과 `sce_sys/param.json` 메타데이터 추출에 사용됩니다. 기본 경로:
+`C:\Program Files\OSFMount\OSFMount.exe`
 
 ---
 
@@ -270,11 +309,20 @@ CACHE_TTL_HOURS=24
 # 이 값보다 높은 펌웨어를 요구하는 섹션은 자동으로 skip
 USER_FIRMWARE=7
 
-# 다운로드 매니저: 비워두면 내장 스트리머, FDM 시 Free Download Manager 사용
-DOWNLOAD_MANAGER=
+# Free Download Manager 실행 파일 경로 (비워두면 내장 스트리머 사용)
+DOWNLOAD_MANAGER=C:\Program Files\Softdeluxe\Free Download Manager\fdm.exe
 
-# FDM 사용 시 파일당 동시 연결 수
-DOWNLOADER_SESSION=3
+# [FDM 모드] 배치 다운로드 시 동시 처리 게임 수 (기본값: 1)
+# Rolling window 방식 — 한 게임 완료 즉시 다음 게임 시작
+DOWNLOADER_PARALLEL_GAME_PARSING=1
+
+# [FDM 모드] 게임 내 동시 FDM 큐잉 파일 수 (기본값: 3)
+# URL resolve → FDM 큐잉을 즉시 연결하여 토큰 만료 방지
+# 값이 너무 크면 나중에 큐잉된 URL이 만료되어 400 에러 발생 가능
+DOWNLOADER_SIMUL_DOWN_LIMIT=3
+
+# OSFMount 실행 파일 경로 (exFAT 리전 검증용)
+OSFMOUNT_PATH=C:\Program Files\OSFMount\OSFMount.exe
 ```
 
 *`UnRAR.exe`는 첫 실행 시 `bin/` 폴더에 자동 다운로드·설치됩니다.*
@@ -335,6 +383,8 @@ ps5dl download "Game Title" --password "custom_password"
 # 실제 다운로드 없이 완료로 등록
 ps5dl download "Game Title" --completed
 ```
+
+**배치 + FDM 모드:** `DOWNLOAD_MANAGER` 설정 시 `--limit`는 `DOWNLOADER_PARALLEL_GAME_PARSING`개 게임을 동시에 rolling window 방식으로 처리합니다. 한 게임이 완료되면 즉시 다음 게임이 시작됩니다.
 
 ---
 
@@ -410,21 +460,36 @@ ps5dl open "After The Fall"
 4. **Dead link 재시도**: 링크 사망(404) 시 동일 섹션 내 다음 호스트로 재시도
 5. **다운로드**:
    - *내장 모드*: 1fichier API 스트리밍 또는 Datanodes 다단계 흐름
-   - *FDM 모드* (`DOWNLOAD_MANAGER=FDM`): direct URL 취득 후 FDM CLI에 위임, 파일 완료 시까지 폴링
+   - *FDM 모드* (`DOWNLOAD_MANAGER` 설정 시): 파일별로 URL resolve 직후 FDM에 큐잉 (토큰 만료 방지). `.fdmdownload` 임시 파일 소멸로 완료 감지. `DOWNLOADER_SIMUL_DOWN_LIMIT`개까지 동시 다운로드. **전체 완료 후** 후처리 시작.
 6. **exFAT 실패 처리**: exFAT 섹션 다운로드 실패 시 `.exfat` → `.failed` 리네임 후 해당 게임 skip (다른 섹션 시도 없음)
 
 ### 후처리 흐름
-다운로드 완료 후:
-1. **메타데이터**: `param.json` 부분 추출로 실제 타이틀·PPSA·버전 파싱
+
+#### 일반 리전 (non-exFAT)
+1. **메타데이터**: 아카이브에서 `param.json` 부분 추출로 실제 타이틀·PPSA·버전 파싱
 2. **비밀번호 감지**: 비밀번호 없이 시도 → `DLPSGAME.COM` → `dlpsgame.com` → 스크랩 비밀번호 순차 대입
 3. **암호화·분할 압축인 경우**:
    - UnRAR/7z로 추출
-   - `eboot.bin`이 루트가 되도록 폴더 구조 평탄화
    - 원본 아카이브 삭제
    - Bandizip으로 재압축: `bz a -r -fmt:7z -l:7 "output.7z"`
 4. **비암호화인 경우**: `{Title} [PPSA][vXX.XX]{ext}` 포맷으로 리네임 보존
-5. **exFAT 파일**: Bandizip으로 `.7z` 압축
-6. **등록**: `data/downloaded.xml`에 최종 파일명 기록
+5. **등록**: `data/downloaded.xml`에 최종 파일명 기록
+
+#### exFAT 리전
+exFAT 디스크 이미지는 PS5 파일시스템을 직접 포함합니다. `param.json`이 이미지 내부에 있으므로 아카이브 검사 대신 OSFMount를 사용합니다.
+
+**아카이브 경로** (`.exfat`를 감싼 `.rar`/`.zip`):
+1. 암호화 감지 후 아카이브를 임시 폴더에 추출
+2. 추출된 결과물에서 `.exfat` 파일 탐색
+3. OSFMount로 읽기 전용 마운트 → `chkdsk` → `sce_sys/param.json` 읽기 → 언마운트
+4. 검증 실패 시 에러 중단
+5. **암호화인 경우**: `.exfat` 리네임 후 암호 없는 클린 `.7z`로 재압축. 원본 아카이브·임시 폴더 삭제
+6. **비암호화인 경우**: 임시 폴더 삭제, 원본 아카이브를 표준 파일명으로 리네임
+
+**Raw `.exfat` 경로** (디스크 이미지 직접 다운로드):
+1. OSFMount 마운트 → `chkdsk` + `sce_sys/param.json` → 언마운트
+2. 실제 메타데이터로 `.exfat` 표준 파일명 리네임
+3. Bandizip으로 `.7z` 압축 후 원본 `.exfat` 삭제
 
 ### 최종 파일명 규칙
 
@@ -432,6 +497,8 @@ ps5dl open "After The Fall"
 |------|--------|
 | 암호화·분할 압축 아카이브 | `{Title} [PPSA][ver].7z` |
 | 무암호 아카이브 | `{Title} [PPSA][ver]{.rar/.zip/.7z}` |
+| exFAT (암호화 아카이브) | `{Title} [PPSA][ver].7z` |
+| exFAT (무암호 아카이브) | `{Title} [PPSA][ver].rar` |
 | exFAT raw 이미지 | `{Title} [PPSA][ver].7z` |
 | DLC, UNLOCK, UPDATE | `{Title} [PPSA][TYPE]{ext}` |
 | exFAT 다운로드 실패 | `original_name.failed` |
