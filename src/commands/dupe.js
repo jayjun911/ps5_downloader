@@ -51,9 +51,20 @@ async function dupeCommand(query) {
     const downloadedGames = loadDownloadedGames();
     const webGames = await getWebGameList();
 
+    const { getWebGameStatus } = require('../utils/gameMatcher');
+
     // Map of normalized titles for fast lookup
     const localMap = new Map(localGames.map(g => [g.normalizedTitle, g]));
     const dlMap = new Map(downloadedGames.map(g => [g.normalizedTitle, g]));
+
+    const localPpsaMap = new Map();
+    for (const g of localGames) {
+      if (g.ppsa) localPpsaMap.set(g.ppsa.toUpperCase(), g);
+    }
+    const dlPpsaMap = new Map();
+    for (const g of downloadedGames) {
+      if (g.ppsa) dlPpsaMap.set(g.ppsa.toUpperCase(), g);
+    }
 
     const { loadExcludedGames } = require('../services/excludedDb');
     const excludedSet = new Set(loadExcludedGames().map(g => g.normalizedTitle));
@@ -68,11 +79,13 @@ async function dupeCommand(query) {
       }
     } else {
       // Find all TBD web games
-      targetWebGames = webGames.filter(g => 
-        !localMap.has(g.normalizedTitle) && 
-        !dlMap.has(g.normalizedTitle) && 
-        !excludedSet.has(g.normalizedTitle)
-      );
+      targetWebGames = [];
+      for (const g of webGames) {
+        const matchInfo = getWebGameStatus(g, localMap, dlMap, excludedSet, localPpsaMap, dlPpsaMap);
+        if (matchInfo.status === 'tbd') {
+          targetWebGames.push(g);
+        }
+      }
       if (targetWebGames.length === 0) {
         logger.info('No TBD games remaining in the web list to check.');
         return;

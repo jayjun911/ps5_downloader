@@ -93,14 +93,41 @@ async function downloadUnrarIfNeeded() {
   }
 }
 
+function get7zExtractorPath() {
+  // 1. Check if 7z.exe is in PATH
+  try {
+    const where7z = execSync('where 7z', { stdio: ['pipe', 'pipe', 'ignore'], encoding: 'utf-8' }).trim().split(/\r?\n/)[0];
+    if (where7z && fs.existsSync(where7z)) return { path: where7z, type: '7z' };
+  } catch (e) {}
+
+  // 2. Check if winrar.exe is in PATH
+  try {
+    const whereWinrar = execSync('where winrar', { stdio: ['pipe', 'pipe', 'ignore'], encoding: 'utf-8' }).trim().split(/\r?\n/)[0];
+    if (whereWinrar && fs.existsSync(whereWinrar)) return { path: whereWinrar, type: 'winrar' };
+  } catch (e) {}
+
+  // 3. Check common installation paths
+  const common7z = 'C:\\Program Files\\7-Zip\\7z.exe';
+  if (fs.existsSync(common7z)) return { path: common7z, type: '7z' };
+
+  const commonWinrar = 'C:\\Program Files\\WinRAR\\WinRAR.exe';
+  if (fs.existsSync(commonWinrar)) return { path: commonWinrar, type: 'winrar' };
+
+  const common7z86 = 'C:\\Program Files (x86)\\7-Zip\\7z.exe';
+  if (fs.existsSync(common7z86)) return { path: common7z86, type: '7z' };
+
+  return null;
+}
+
 /**
- * Checks if a RAR file is password protected by testing it without a password.
+ * Checks if a RAR/ZIP/7z file is password protected by testing it without a password.
  * 
  * @param {string} rarFilePath Path to the RAR archive
  * @returns {Promise<boolean>} True if password protected, false otherwise
  */
 async function isArchiveEncrypted(rarFilePath) {
   const isZip = rarFilePath.toLowerCase().endsWith('.zip');
+  const is7z = rarFilePath.toLowerCase().endsWith('.7z');
   if (isZip) {
     try {
       const env = { ...process.env, ARCHIVE_PATH: rarFilePath };
@@ -109,6 +136,26 @@ async function isArchiveEncrypted(rarFilePath) {
       return false;
     } catch (e) {
       return true;
+    }
+  }
+
+  if (is7z) {
+    const extTool = get7zExtractorPath();
+    if (!extTool) return false;
+    if (extTool.type === '7z') {
+      try {
+        execSync(`"${extTool.path}" t -y -p- "${rarFilePath}"`, { stdio: 'ignore' });
+        return false;
+      } catch (e) {
+        return true;
+      }
+    } else if (extTool.type === 'winrar') {
+      try {
+        execSync(`"${extTool.path}" t -ibck -y -p- "${rarFilePath}"`, { stdio: 'ignore' });
+        return false;
+      } catch (e) {
+        return true;
+      }
     }
   }
 
@@ -146,15 +193,16 @@ async function isArchiveEncrypted(rarFilePath) {
 }
 
 /**
- * Extracts a RAR or ZIP archive to a destination directory.
+ * Extracts a RAR, ZIP or 7z archive to a destination directory.
  * 
- * @param {string} rarFilePath First part of the archive (.part1.rar, .rar, or .zip)
+ * @param {string} rarFilePath First part of the archive (.part1.rar, .rar, .zip, or .7z)
  * @param {string} destFolder Output directory for extraction
  * @param {string} password Archive password
  * @returns {Promise<void>}
  */
 async function extractRarArchive(rarFilePath, destFolder, password) {
   const isZip = rarFilePath.toLowerCase().endsWith('.zip');
+  const is7z = rarFilePath.toLowerCase().endsWith('.7z');
 
   if (!fs.existsSync(destFolder)) {
     fs.mkdirSync(destFolder, { recursive: true });
@@ -178,6 +226,21 @@ async function extractRarArchive(rarFilePath, destFolder, password) {
       const cmd = `powershell -Command "Expand-Archive -Path $env:ARCHIVE_PATH -DestinationPath $env:DEST_DIR -Force"`;
       logger.info(`Executing PowerShell Expand-Archive: ${cmd}`);
       execSync(cmd, { env, stdio: 'inherit' });
+    }
+  } else if (is7z) {
+    const extTool = get7zExtractorPath();
+    if (!extTool) {
+      throw new Error('No 7-Zip or WinRAR installation found to extract .7z archive.');
+    }
+    const pwdArg = password ? `-p"${password}"` : '-p-';
+    if (extTool.type === '7z') {
+      const cmd = `"${extTool.path}" x -y ${pwdArg} -o"${destFolder}" "${rarFilePath}"`;
+      logger.info(`Executing 7z: ${cmd}`);
+      execSync(cmd, { stdio: 'inherit' });
+    } else if (extTool.type === 'winrar') {
+      const cmd = `"${extTool.path}" x -ibck -y ${pwdArg} "${rarFilePath}" "${destFolder}\\"`;
+      logger.info(`Executing WinRAR: ${cmd}`);
+      execSync(cmd, { stdio: 'inherit' });
     }
   } else {
     const unrarPath = await downloadUnrarIfNeeded();
@@ -299,6 +362,7 @@ function sanitizeFileName(name) {
  */
 async function getGameInfoFromArchive(rarFilePath, password) {
   const isZip = rarFilePath.toLowerCase().endsWith('.zip');
+  const is7z = rarFilePath.toLowerCase().endsWith('.7z');
   const tempDir = path.join(BIN_DIR, 'temp_param_' + Date.now());
 
   if (!fs.existsSync(tempDir)) {
@@ -339,6 +403,37 @@ async function getGameInfoFromArchive(rarFilePath, password) {
             // Try next password
           }
         }
+      }
+    }
+  } else if (is7z) {
+    const extTool = get7zExtractorPath();
+    if (extTool) {
+      const candidates = [];
+      if (password) candidates.push(password);
+      const fallbacks = ['www.DLPSGAME.COM', 'DLPSGAME.COM', 'www.dlpsgame.com', 'dlpsgame.com'];
+      for (const fb of fallbacks) {
+        if (!candidates.includes(fb)) candidates.push(fb);
+      }
+
+      encrypted = await isArchiveEncrypted(rarFilePath);
+      const testCandidates = encrypted ? candidates : ['', ...candidates];
+
+      for (const cand of testCandidates) {
+        try {
+          if (extTool.type === '7z') {
+            const pwdArg = cand ? `-p"${cand}"` : '-p-';
+            execSync(`"${extTool.path}" e -y ${pwdArg} -o"${tempDir}" "${rarFilePath}" "*param.json"`, { stdio: 'ignore' });
+          } else if (extTool.type === 'winrar') {
+            const pwdArg = cand ? `-p"${cand}"` : '-p-';
+            execSync(`"${extTool.path}" e -ibck -y ${pwdArg} "${rarFilePath}" "*param.json" "${tempDir}\\"`, { stdio: 'ignore' });
+          }
+          if (findParamJson(tempDir)) {
+            success = true;
+            workingPassword = cand;
+            encrypted = !!cand;
+            break;
+          }
+        } catch (e) {}
       }
     }
   } else {
@@ -472,6 +567,7 @@ async function getGameInfoFromArchive(rarFilePath, password) {
  */
 async function findWorkingPassword(rarFilePath, passwordCandidates = []) {
   const isZip = rarFilePath.toLowerCase().endsWith('.zip');
+  const is7z = rarFilePath.toLowerCase().endsWith('.7z');
   const candidates = [...passwordCandidates];
   const fallbacks = ['www.DLPSGAME.COM', 'DLPSGAME.COM', 'www.dlpsgame.com', 'dlpsgame.com'];
   for (const fb of fallbacks) {
@@ -487,6 +583,35 @@ async function findWorkingPassword(rarFilePath, passwordCandidates = []) {
         } catch (e) {
           // ignore and try next
         }
+      }
+    }
+    return '';
+  }
+
+  if (is7z) {
+    const extTool = get7zExtractorPath();
+    if (!extTool) return '';
+    if (extTool.type === '7z') {
+      try {
+        execSync(`"${extTool.path}" t -y -p- "${rarFilePath}"`, { stdio: 'ignore' });
+        return ''; // Succeeded with no password
+      } catch (e) {}
+      for (const cand of candidates) {
+        try {
+          execSync(`"${extTool.path}" t -y -p"${cand}" "${rarFilePath}"`, { stdio: 'ignore' });
+          return cand;
+        } catch (e) {}
+      }
+    } else if (extTool.type === 'winrar') {
+      try {
+        execSync(`"${extTool.path}" t -ibck -y -p- "${rarFilePath}"`, { stdio: 'ignore' });
+        return '';
+      } catch (e) {}
+      for (const cand of candidates) {
+        try {
+          execSync(`"${extTool.path}" t -ibck -y -p"${cand}" "${rarFilePath}"`, { stdio: 'ignore' });
+          return cand;
+        } catch (e) {}
       }
     }
     return '';
@@ -550,6 +675,42 @@ async function findWorkingPassword(rarFilePath, passwordCandidates = []) {
   return ''; // None worked
 }
 
+const BZ_EXE_PATH = 'C:\\Program Files\\Bandizip\\bz.exe';
+
+/**
+ * Compresses a folder to a 7z archive using Bandizip.
+ *
+ * @param {string} folderPath The folder containing files to compress
+ * @param {string} dest7zPath The output 7z file path
+ * @returns {Promise<void>}
+ */
+async function compressFolderTo7z(folderPath, dest7zPath) {
+  if (!fs.existsSync(BZ_EXE_PATH)) {
+    throw new Error(`Bandizip (bz.exe) not found at: ${BZ_EXE_PATH}`);
+  }
+
+  const cmd = `"${BZ_EXE_PATH}" a -r -fmt:7z -l:7 -y "${dest7zPath}" "${folderPath}\\*"`;
+  logger.info(`Executing Bandizip: bz a -r -fmt:7z -l:7 -y "${path.basename(dest7zPath)}" "${path.basename(folderPath)}\\*"`);
+  execSync(cmd, { stdio: 'inherit' });
+}
+
+/**
+ * Compresses a single file to a 7z archive using Bandizip.
+ *
+ * @param {string} filePath Path to the file to compress
+ * @param {string} dest7zPath Output 7z path
+ * @returns {Promise<void>}
+ */
+async function compressFileTo7z(filePath, dest7zPath) {
+  if (!fs.existsSync(BZ_EXE_PATH)) {
+    throw new Error(`Bandizip (bz.exe) not found at: ${BZ_EXE_PATH}`);
+  }
+
+  const cmd = `"${BZ_EXE_PATH}" a -fmt:7z -l:7 -y "${dest7zPath}" "${filePath}"`;
+  logger.info(`Executing Bandizip: bz a -fmt:7z -l:7 -y "${path.basename(dest7zPath)}" "${path.basename(filePath)}"`);
+  execSync(cmd, { stdio: 'inherit' });
+}
+
 /**
  * Compresses a folder back to a RAR archive.
  *
@@ -593,6 +754,8 @@ module.exports = {
   isArchiveEncrypted,
   extractRarArchive,
   getGameInfoFromArchive,
+  compressFolderTo7z,
+  compressFileTo7z,
   compressFolderToRar,
   compressFileToRar,
   findWorkingPassword

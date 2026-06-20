@@ -23,9 +23,21 @@ async function listCommand(source = 'all', options = {}) {
       normalizedSource = 'dl';
     }
     
+    const { getWebGameStatus } = require('../utils/gameMatcher');
+
     // Maps of normalized titles for fast lookup
     const localMap = new Map(localGames.map(g => [g.normalizedTitle, g]));
     const dlMap = new Map(downloadedGames.map(g => [g.normalizedTitle, g]));
+    
+    // Maps of PPSAs for fallback lookup
+    const localPpsaMap = new Map();
+    for (const g of localGames) {
+      if (g.ppsa) localPpsaMap.set(g.ppsa.toUpperCase(), g);
+    }
+    const dlPpsaMap = new Map();
+    for (const g of downloadedGames) {
+      if (g.ppsa) dlPpsaMap.set(g.ppsa.toUpperCase(), g);
+    }
     
     const { loadExcludedGames } = require('../services/excludedDb');
     const excludedGames = loadExcludedGames();
@@ -64,14 +76,18 @@ async function listCommand(source = 'all', options = {}) {
       }));
     } else if (normalizedSource === 'tbd') {
       const webList = await getWebGameList();
-      displayList = webList
-        .filter(g => !localMap.has(g.normalizedTitle) && !dlMap.has(g.normalizedTitle) && !excludedSet.has(g.normalizedTitle))
-        .map(g => ({
-          title: g.title,
-          ppsa: '',
-          status: 'tbd',
-          normalizedTitle: g.normalizedTitle
-        }));
+      displayList = [];
+      for (const g of webList) {
+        const matchInfo = getWebGameStatus(g, localMap, dlMap, excludedSet, localPpsaMap, dlPpsaMap);
+        if (matchInfo.status === 'tbd') {
+          displayList.push({
+            title: g.title,
+            ppsa: '',
+            status: 'tbd',
+            normalizedTitle: g.normalizedTitle
+          });
+        }
+      }
     } else if (normalizedSource === 'all') {
       const webList = await getWebGameList();
       const processedNormalized = new Set();
@@ -80,25 +96,12 @@ async function listCommand(source = 'all', options = {}) {
       for (const wg of webList) {
         processedNormalized.add(wg.normalizedTitle);
         
-        let ppsa = '';
-        let status = 'tbd';
-        
-        if (dlMap.has(wg.normalizedTitle)) {
-          const dg = dlMap.get(wg.normalizedTitle);
-          ppsa = dg.ppsa || '';
-          status = 'downloaded';
-        } else if (localMap.has(wg.normalizedTitle)) {
-          const lg = localMap.get(wg.normalizedTitle);
-          ppsa = lg.ppsa || '';
-          status = 'local';
-        } else if (excludedSet.has(wg.normalizedTitle)) {
-          status = 'excluded';
-        }
+        const matchInfo = getWebGameStatus(wg, localMap, dlMap, excludedSet, localPpsaMap, dlPpsaMap);
         
         displayList.push({
           title: wg.title,
-          ppsa,
-          status,
+          ppsa: matchInfo.ppsa,
+          status: matchInfo.status,
           normalizedTitle: wg.normalizedTitle
         });
       }

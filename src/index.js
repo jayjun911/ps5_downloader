@@ -30,6 +30,7 @@ program
   .option('-t, --type <string>', 'Download only specific file types (e.g. GAME, DLC, BACKPORT, UPDATE)')
   .option('-c, --completed', 'Mark the game as completed/downloaded without downloading it')
   .option('-p, --password <string>', 'Override archive password (used when auto-detection fails)')
+  .option('-o, --out <path>', 'Override the default download directory')
   .description('Download a specific game or a batch of games from TBD list')
   .action((title, options) => {
     downloadCommand(title, options);

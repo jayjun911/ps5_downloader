@@ -1,20 +1,20 @@
 const path = require('path');
 const fs = require('fs');
 const ora = require('ora');
-const { extractRarArchive, getGameInfoFromArchive, compressFolderToRar, compressFileToRar, findWorkingPassword } = require('../services/unrarService');
+const { extractRarArchive, getGameInfoFromArchive, compressFolderTo7z, compressFileTo7z, findWorkingPassword } = require('../services/unrarService');
 const { addDownloadedGame } = require('../services/downloadedDb');
 const logger = require('./logger');
 
 function isArchiveFile(file) {
   const lower = file.toLowerCase();
-  return lower.endsWith('.rar') || lower.endsWith('.zip') || /\.r\d{2}$/.test(lower) || /\.z\d{2}$/.test(lower);
+  return lower.endsWith('.rar') || lower.endsWith('.zip') || lower.endsWith('.7z') || /\.r\d{2}$/.test(lower) || /\.z\d{2}$/.test(lower);
 }
 
 function checkIsSplitArchive(archiveFiles) {
   if (archiveFiles.length <= 1) return false;
   for (const file of archiveFiles) {
     const lower = file.toLowerCase();
-    if (lower.match(/\.part[0-9]+\.(rar|zip|r\d{2}|z\d{2})$/) ||
+    if (lower.match(/\.part[0-9]+\.(rar|zip|7z|r\d{2}|z\d{2})$/) ||
         /\.r\d{2}$/.test(lower) || /\.z\d{2}$/.test(lower)) return true;
   }
   return false;
@@ -26,8 +26,10 @@ function findMainArchiveFile(archiveFiles) {
     const lower = name.toLowerCase();
     return (lower.endsWith('.rar') && !lower.match(/\.part[2-9]\d*\.rar$/) && !lower.match(/\.part0[2-9]\d*\.rar$/)) ||
            (lower.endsWith('.zip') && !lower.match(/\.part[2-9]\d*\.zip$/) && !lower.match(/\.part0[2-9]\d*\.zip$/)) ||
+           (lower.endsWith('.7z') && !lower.match(/\.part[2-9]\d*\.7z$/) && !lower.match(/\.part0[2-9]\d*\.7z$/)) ||
            lower.includes('part1.rar') || lower.includes('part01.rar') ||
-           lower.includes('part1.zip') || lower.includes('part01.zip');
+           lower.includes('part1.zip') || lower.includes('part01.zip') ||
+           lower.includes('part1.7z') || lower.includes('part01.7z');
   });
   return candidate || archiveFiles[0];
 }
@@ -126,7 +128,7 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
         extractSpinner.succeed(`[${groupType}] Extracted to: ${baseNameLabel}`);
 
         const deleteSpinner = ora(`[${groupType}] Cleaning up downloaded archives...`).start();
-        const basePattern = mainFileName.replace(/\.part[0-9]+\.(rar|zip)$/i, '').replace(/\.(rar|zip)$/i, '');
+        const basePattern = mainFileName.replace(/\.part[0-9]+\.(rar|zip|7z)$/i, '').replace(/\.(rar|zip|7z)$/i, '');
         for (const file of archiveSet) {
           if (file.toLowerCase().startsWith(basePattern.toLowerCase()) || file === mainFileName) {
             try { fs.unlinkSync(path.join(downloadDir, file)); } catch (e) { /* ignore */ }
@@ -134,14 +136,14 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
         }
         deleteSpinner.succeed(`[${groupType}] Cleaned up.`);
 
-        const destRarPath = path.join(downloadDir, `${baseNameLabel}.rar`);
-        const compressSpinner = ora(`[${groupType}] Recompressing to ${baseNameLabel}.rar...`).start();
-        await compressFolderToRar(outputFolderPath, destRarPath);
+        const destRarPath = path.join(downloadDir, `${baseNameLabel}.7z`);
+        const compressSpinner = ora(`[${groupType}] Recompressing to ${baseNameLabel}.7z...`).start();
+        await compressFolderTo7z(outputFolderPath, destRarPath);
         if (!fs.existsSync(destRarPath) || fs.statSync(destRarPath).size === 0) {
-          throw new Error(`Recompressed RAR is empty: ${destRarPath}`);
+          throw new Error(`Recompressed 7z is empty: ${destRarPath}`);
         }
-        compressSpinner.succeed(`[${groupType}] Recompressed: ${baseNameLabel}.rar`);
-        registeredFiles.push({ fileName: `${baseNameLabel}.rar`, type: groupType });
+        compressSpinner.succeed(`[${groupType}] Recompressed: ${baseNameLabel}.7z`);
+        registeredFiles.push({ fileName: `${baseNameLabel}.7z`, type: groupType });
 
         try { fs.rmSync(outputFolderPath, { recursive: true, force: true }); } catch (e) { /* ignore */ }
       } catch (extErr) {
@@ -191,10 +193,10 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
       const ext = path.extname(file).toLowerCase();
       const isText = ['.txt', '.pdf', '.jpg', '.jpeg', '.png', '.md', '.htm', '.html'].includes(ext);
 
-      // Non-archive GAME files (e.g. .exfat raw images) get wrapped in RAR before registering
+      // Non-archive GAME files (e.g. .exfat raw images) get wrapped in 7z before registering
       if (isGame && !isText) {
-        const destRarPath = path.join(downloadDir, `${baseName}.rar`);
-        const compressSpinner = ora(`[${type}] Renaming and compressing "${file}" to RAR...`).start();
+        const dest7zPath = path.join(downloadDir, `${baseName}.7z`);
+        const compressSpinner = ora(`[${type}] Renaming and compressing "${file}" to 7z...`).start();
         const currentPath = path.join(downloadDir, file);
         const renamedPath = path.join(downloadDir, `${baseName}${ext}`);
         let actualRenamedPath = renamedPath;
@@ -205,20 +207,13 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
             fs.renameSync(currentPath, actualRenamedPath);
           }
 
-          await compressFileToRar(actualRenamedPath, destRarPath);
-          if (!fs.existsSync(destRarPath) || fs.statSync(destRarPath).size === 0) {
-            throw new Error('Output RAR is empty.');
+          await compressFileTo7z(actualRenamedPath, dest7zPath);
+          if (!fs.existsSync(dest7zPath) || fs.statSync(dest7zPath).size === 0) {
+            throw new Error('Output 7z is empty.');
           }
 
-          // Delete the temporary uncompressed exfat file after successful compression
-          try {
-            fs.unlinkSync(actualRenamedPath);
-          } catch (delErr) {
-            logger.warn(`Failed to delete original file "${path.basename(actualRenamedPath)}": ${delErr.message}`);
-          }
-
-          compressSpinner.succeed(`[${type}] Renamed and compressed to: ${baseName}.rar`);
-          registeredFiles.push({ fileName: `${baseName}.rar`, type });
+          compressSpinner.succeed(`[${type}] Renamed and compressed to: ${baseName}.7z`);
+          registeredFiles.push({ fileName: `${baseName}.7z`, type });
         } catch (compErr) {
           compressSpinner.fail(`[${type}] Processing failed: ${compErr.message}. Keeping original file.`);
           const finalName = path.basename(actualRenamedPath);
@@ -242,13 +237,14 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
     }
   }
 
+  const titleToRegister = (initialTitle && initialTitle !== 'Unknown Game') ? initialTitle : finalTitle;
   const gameToRegister = registeredFiles.find(rf => rf.type === 'GAME');
   const otherToRegister = registeredFiles.filter(rf => rf.type !== 'GAME');
 
   if (gameToRegister) {
-    addDownloadedGame({ title: finalTitle, fileName: gameToRegister.fileName, ppsa: finalPpsa, password: '', source: hostName, region });
+    addDownloadedGame({ title: titleToRegister, fileName: gameToRegister.fileName, ppsa: finalPpsa, password: '', source: hostName, region });
   } else if (otherToRegister.length > 0) {
-    addDownloadedGame({ title: finalTitle, fileName: otherToRegister[0].fileName, ppsa: finalPpsa, password: '', source: hostName, region });
+    addDownloadedGame({ title: titleToRegister, fileName: otherToRegister[0].fileName, ppsa: finalPpsa, password: '', source: hostName, region });
   }
 
   return { registeredFiles, finalTitle, finalPpsa, finalVer };

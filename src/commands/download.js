@@ -144,25 +144,40 @@ async function downloadSingleGame(game, options = {}) {
         }
         
         if (bestLinks.hostName === '1fichier' || bestLinks.hostName === 'Datanodes') {
-          const downloadDir = process.env.DOWNLOAD_DIR || path.join(__dirname, '../../downloads');
+          const downloadDir = options.out || process.env.DOWNLOAD_DIR || path.join(__dirname, '../../downloads');
           const downloadUrls = bestLinks.urls.filter(url => !url.startsWith('text_guide:'));
           const textGuideUrls = bestLinks.urls.filter(url => url.startsWith('text_guide:'));
-          
+
           const totalParts = downloadUrls.length;
           let partIdx = 1;
-          
+
+          const useFdm = (process.env.DOWNLOAD_MANAGER || '').toUpperCase() === 'FDM';
+          if (useFdm) {
+            const { downloadWithFdm } = require('../services/fdmDownloader');
+            // Preload to surface missing-exe errors early
+            void downloadWithFdm;
+          }
+
           for (const fileUrl of downloadUrls) {
             const partLabel = totalParts > 1 ? ` (Part ${partIdx}/${totalParts})` : '';
-            
+
             // Resolve file type from urlInfo
             const info = bestLinks.urlInfo ? bestLinks.urlInfo.find(ui => ui.url === fileUrl) : null;
             const typeLabel = info ? ` [${info.type}]` : ' [GAME]';
-            
+
             const partSpinner = ora(`Downloading${typeLabel} part ${partIdx}/${totalParts}...`).start();
-            
+
             try {
               let result;
-              if (bestLinks.hostName === 'Datanodes') {
+              if (useFdm) {
+                const { downloadWithFdm } = require('../services/fdmDownloader');
+                result = await downloadWithFdm(
+                  fileUrl,
+                  downloadDir,
+                  (status) => { partSpinner.text = `${typeLabel}${partLabel} ${status}`; },
+                  bestLinks.hostName === '1fichier'
+                );
+              } else if (bestLinks.hostName === 'Datanodes') {
                 result = await downloadFromDatanodes(fileUrl, downloadDir,
                   (downloaded, total) => {
                     const mb = (downloaded / 1024 / 1024).toFixed(1);
@@ -241,16 +256,46 @@ async function downloadSingleGame(game, options = {}) {
         }
       } catch (err) {
         lastError = err;
-        // Clean up partial files downloaded in this attempt (only if download didn't complete)
+        const isExfatSection = section.region.toUpperCase().includes('EXFAT');
+        const downloadDir = options.out || process.env.DOWNLOAD_DIR || path.join(__dirname, '../../downloads');
+
+        // Clean up partial files (or rename .exfat to .failed for exFAT sections)
         if (!downloadCompleted && downloadedFiles && downloadedFiles.length > 0) {
-          const downloadDir = process.env.DOWNLOAD_DIR || path.join(__dirname, '../../downloads');
           for (const fileItem of downloadedFiles) {
+            const filePath = path.join(downloadDir, fileItem.filename);
             try {
-              fs.unlinkSync(path.join(downloadDir, fileItem.filename));
+              if (isExfatSection && fileItem.filename.toLowerCase().endsWith('.exfat')) {
+                const failedPath = filePath.replace(/\.exfat$/i, '.failed');
+                if (fs.existsSync(filePath)) {
+                  fs.renameSync(filePath, failedPath);
+                  logger.warn(`Renamed failed exFAT: ${path.basename(failedPath)}`);
+                }
+              } else {
+                fs.unlinkSync(filePath);
+              }
             } catch (e) {
-              // ignore delete error
+              // ignore cleanup error
             }
           }
+        }
+
+        // Also scan downloadDir for any .exfat files left by the downloader (e.g. partial writes)
+        if (isExfatSection && fs.existsSync(downloadDir)) {
+          try {
+            for (const f of fs.readdirSync(downloadDir)) {
+              if (f.toLowerCase().endsWith('.exfat')) {
+                const fp = path.join(downloadDir, f);
+                const failedFp = fp.replace(/\.exfat$/i, '.failed');
+                fs.renameSync(fp, failedFp);
+                logger.warn(`Renamed failed exFAT: ${path.basename(failedFp)}`);
+              }
+            }
+          } catch (e) {}
+
+          // exFAT failure: do NOT try other sections — skip this game entirely
+          sectionDone = true;
+          const exfatErr = new Error(`exFAT download failed (${regionInfo}): ${err.message}`);
+          throw exfatErr;
         }
 
         if (downloadCompleted) {
@@ -314,18 +359,31 @@ async function downloadCommand(titleQuery, options = {}) {
       const downloadedGames = loadDownloadedGames();
       const webList = await getWebGameList();
 
+      const { getWebGameStatus } = require('../utils/gameMatcher');
+
       const localMap = new Map(localGames.map(g => [g.normalizedTitle, g]));
       const dlMap = new Map(downloadedGames.map(g => [g.normalizedTitle, g]));
+
+      const localPpsaMap = new Map();
+      for (const g of localGames) {
+        if (g.ppsa) localPpsaMap.set(g.ppsa.toUpperCase(), g);
+      }
+      const dlPpsaMap = new Map();
+      for (const g of downloadedGames) {
+        if (g.ppsa) dlPpsaMap.set(g.ppsa.toUpperCase(), g);
+      }
 
       const { loadExcludedGames } = require('../services/excludedDb');
       const excludedGames = loadExcludedGames();
       const excludedSet = new Set(excludedGames.map(g => g.normalizedTitle));
 
-      const tbdList = webList.filter(g => 
-        !localMap.has(g.normalizedTitle) && 
-        !dlMap.has(g.normalizedTitle) && 
-        !excludedSet.has(g.normalizedTitle)
-      );
+      const tbdList = [];
+      for (const g of webList) {
+        const matchInfo = getWebGameStatus(g, localMap, dlMap, excludedSet, localPpsaMap, dlPpsaMap);
+        if (matchInfo.status === 'tbd') {
+          tbdList.push(g);
+        }
+      }
 
       if (tbdList.length === 0) {
         logger.info('No TBD (To Be Downloaded) games found.');

@@ -1,6 +1,6 @@
 # PS5 Downloader CLI (`ps5dl`)
 
-`ps5dl` is a Node.js-based Command Line Interface (CLI) utility designed to automate the process of downloading PS5 games from web sources, automatically verifying if the downloaded archives are password-protected, extracting them into Folder Format if they are, and managing your local library metadata. It synchronizes with your LaunchBox database exports to determine which games you still need to download (TBD).
+`ps5dl`은 Node.js 기반 CLI 도구로, `dlpsgame.com`에서 PS5 게임을 자동으로 다운로드하고, 암호화 여부 판별 및 후처리(평탄화, Bandizip 7z 재압축, 표준 파일명 리네임)를 수행하며, LaunchBox XML(`PS5.xml`)과 동기화하여 미보유 게임을 추적합니다.
 
 ---
 
@@ -8,161 +8,215 @@
 
 ## Table of Contents
 1. [Prerequisites & Preparations](#1-prerequisites--preparations)
-   - [LaunchBox Database Export (`PS5.xml`)](#launchbox-database-export-ps5xml)
-   - [1fichier API Key Registration](#1fichier-api-key-registration)
 2. [Environment Configuration (`.env`)](#2-environment-configuration-env)
 3. [Installation](#3-installation)
-4. [Command Reference & Usage](#4-command-reference--usage)
-5. [Automatic Download & Extraction Pipeline](#5-automatic-download--extraction-pipeline)
+4. [Command Reference](#4-command-reference)
+5. [Download & Post-processing Pipeline](#5-download--post-processing-pipeline)
 
 ---
 
 ## 1. Prerequisites & Preparations
 
-Before running the CLI, you must set up the following prerequisites:
-
 ### LaunchBox Database Export (`PS5.xml`)
-The tool matches your current local game library against the web database to determine missing titles.
-1. In **LaunchBox**, select your PS5 games and export them as a Playlist XML file (choose the option that exports it as a playlist/library XML structure).
-2. Rename the exported XML file to **`PS5.xml`**.
-3. Place the file inside the project directory at:
+1. In **LaunchBox**, export your PS5 library as a Playlist XML file.
+2. Rename the file to **`PS5.xml`** and place it at:
    `C:\Code\PS5_Downloader\data\PS5.xml`
 
-### 1fichier API Key Registration
-To allow automated high-speed downloads without browser interactions:
-1. Log in to your account on [1fichier.com](https://1fichier.com/) (a Premium/Bypass subscription is required for direct high-speed API downloads).
-2. Go to your **Parameters** or **API** settings page.
-3. Locate or generate your **API Key** (API Token).
-4. Save this token inside the `.env` file under the key `FICHIER_API_KEY`.
+### 1fichier API Key
+1. Log in to [1fichier.com](https://1fichier.com/) (Premium/Bypass subscription required).
+2. Go to your API settings page and copy your **API Key**.
+3. Set it as `FICHIER_API_KEY` in the `.env` file.
+
+### Bandizip
+Required for re-compression. Must be installed at:
+`C:\Program Files\Bandizip\bz.exe`
+
+### Free Download Manager (optional)
+Required only when `DOWNLOAD_MANAGER=FDM`. Default path:
+`C:\Program Files\Softdeluxe\Free Download Manager\fdm.exe`
 
 ---
 
 ## 2. Environment Configuration (`.env`)
 
-Create a `.env` file in the root of the project (`C:\Code\PS5_Downloader\.env`) with the following variables:
-
 ```env
-# 1fichier API Key (Do not share this key)
+# 1fichier API Key (keep private)
 FICHIER_API_KEY=your_1fichier_api_key_here
 
-# Directory where downloaded files and extracted folders will be saved
-DOWNLOAD_DIR=H:\Download
+# Directory where downloaded files will be saved
+DOWNLOAD_DIR=C:\Z
 
-# Cache expiration for web game list (in hours)
+# Cache expiration for web game list (hours)
 CACHE_TTL_HOURS=24
+
+# Your PS5 firmware major version (used for backport filtering)
+# Sections that require higher firmware than this value are skipped
+USER_FIRMWARE=7
+
+# Download manager: leave empty to use built-in streamer, set to FDM for Free Download Manager
+DOWNLOAD_MANAGER=
+
+# Number of concurrent connections when using FDM
+DOWNLOADER_SESSION=3
 ```
 
-*Note: The utility automatically downloads and self-contains the official command-line `unrar.exe` in `bin/` directory on first run, so no external tool installation or configuration is required!*
+*Note: `UnRAR.exe` is auto-downloaded and placed in `bin/` on first run — no manual setup needed.*
 
 ---
 
 ## 3. Installation
 
-1. Open your terminal in the project directory (`C:\Code\PS5_Downloader`).
-2. Install the Node.js package dependencies:
-   ```bash
-   npm install
-   ```
-3. Link the package globally so you can execute the command from any directory:
-   ```bash
-   npm link
-   ```
-   *Now you can run the CLI globally using the command: `ps5dl`.*
+```bash
+npm install
+npm link
+```
+
+After linking, use the `ps5dl` command from anywhere.
 
 ---
 
-## 4. Command Reference & Usage
+## 4. Command Reference
 
-### 1. Listing Games (`ps5dl list`)
-Lists games from different sources. You can filter by name (`--name`/`-n`) or limit the output size (`--limit`/`-l`).
-*   **List all games** (Local, Web, and Downloaded status combined):
-    ```bash
-    ps5dl list all
-    ```
-*   **List only local games** (derived from `data/PS5.xml`):
-    ```bash
-    ps5dl list local
-    ```
-*   **List only downloaded games** (derived from `data/downloaded.xml`):
-    ```bash
-    ps5dl list downloaded
-    ```
-*   **List games found on the web**:
-    ```bash
-    ps5dl list web
-    ```
-*   **List TBD (To Be Downloaded) games** (Web games that do NOT exist in Local or Downloaded list, and are not Excluded):
-    ```bash
-    ps5dl list tbd
-    ```
-*   **Filter list by name and limit output count**:
-    ```bash
-    ps5dl list tbd -l 10 -n "Spider-Man"
-    ```
+### `ps5dl list [source]`
+List games from different sources. Supports `--name`/`-n` and `--limit`/`-l` filters.
 
-### 2. Downloading Games (`ps5dl download`)
-*   **Download a single game**:
-    ```bash
-    ps5dl download "Aeterna Noctis"
-    ```
-    *If there are multiple matching matches, the CLI prompts you to select one by number.*
-*   **Batch download TBD games sequentially**:
-    ```bash
-    ps5dl download --limit 5
-    ```
-    *This downloads the first 5 games in your TBD list one by one.*
+| Source | Description |
+|--------|-------------|
+| `all` | Combined local + web + download status |
+| `local` | Games in `data/PS5.xml` |
+| `downloaded` | Games in `data/downloaded.xml` |
+| `web` | All games on dlpsgame.com |
+| `tbd` | Web games not yet in local or downloaded lists |
+| `excluded` | Games excluded from batch downloads |
 
-### 3. Excluding Games (`ps5dl exclude`)
-Exclude specific games from being downloaded during batch/limit runs.
-*   **Show excluded games list**:
-    ```bash
-    ps5dl exclude
-    ```
-*   **Add a game to the exclusion list**:
-    ```bash
-    ps5dl exclude "Game Title Here"
-    ```
-*   **Remove a game from the exclusion list**:
-    ```bash
-    ps5dl exclude "Game Title Here" --remove
-    ```
-
-### 4. Open Game Webpage (`ps5dl open`)
-*   Opens the target game's webpage in your default browser:
-    ```bash
-    ps5dl open "After The Fall"
-    ```
-
-### 5. Managing Completed Games (`ps5dl completed` or `ps5dl download --completed`)
-Manually mark a game as downloaded (completed) in `downloaded.xml` without actually downloading it.
-*   **Show completed games list**:
-    ```bash
-    ps5dl completed
-    ```
-*   **Mark a game as completed**:
-    ```bash
-    ps5dl completed "Game Title Here"
-    # or
-    ps5dl download "Game Title Here" --completed
-    ```
-*   **Remove a game from the completed list**:
-    ```bash
-    ps5dl completed "Game Title Here" --remove
-    ```
+```bash
+ps5dl list tbd
+ps5dl list tbd -l 10 -n "Spider-Man"
+```
 
 ---
 
-## 5. Automatic Download & Extraction Pipeline
+### `ps5dl download [title]`
+Download a single game or a batch from the TBD list.
 
-When you run a download command:
-1. **Turnstile Bypass Scraper**: The tool queries the web pages. It bypasses Cloudflare Turnstile blocks automatically by fetching the page content via the WordPress REST API endpoint or fallback manual HTML caches.
-2. **Link Extraction & Decoding**: It decodes Base64-encrypted secure payloads, handles `clk.sh` short-links, extracts direct download links, and retrieves game region, PPSA codes, and archive passwords.
-3. **Region Priority Routing**: It sorts download options (favoring KOR/KOR-subbed, then USA/EUR) and matches the target PPSA code with your `PS5.xml` database.
-4. **Stream Downloader**: Direct streams are pulled from 1fichier API using simulated browser-like headers to prevent 404/403 blocks.
-5. **Password Detection & Extraction**: Once downloading finishes, it runs a password-check on the downloaded archive files.
-   - **If Password-Protected:** It automatically extracts the files into a folder with the same name as the archive (Folder Format) and deletes the original `.rar` files to save disk space.
-   - **If Not Password-Protected:** It keeps the original `.rar` archives intact (ok) as requested.
-6. **Logging**: The tool adds the downloaded game entry (either folder name or archive name) to `data/downloaded.xml`.
+```bash
+# Single game
+ps5dl download "Aeterna Noctis"
+
+# Batch download (first 5 TBD games)
+ps5dl download --limit 5
+
+# Override download directory
+ps5dl download "Aeterna Noctis" --out "D:\CustomDownloads"
+
+# Download only a specific file type (GAME, DLC, UPDATE, BACKPORT, UNLOCK)
+ps5dl download "EA SPORTS FC 26" --type DLC
+
+# Override archive password
+ps5dl download "Game Title" --password "custom_password"
+
+# Mark as completed without downloading
+ps5dl download "Game Title" --completed
+```
+
+---
+
+### `ps5dl urldown <url>`
+Download directly from a 1fichier, Datanodes, or Vikingfile URL and run the full post-processing pipeline.
+
+```bash
+ps5dl urldown "https://1fichier.com/?abc123"
+ps5dl urldown "https://datanodes.to/abc123" --password "DLPSGAME.COM"
+```
+
+---
+
+### `ps5dl completed [title]`
+Manually manage the completed games database.
+
+```bash
+ps5dl completed                          # List all completed
+ps5dl completed "Game Title"             # Mark as completed
+ps5dl completed "Game Title" --remove    # Remove from completed
+```
+
+---
+
+### `ps5dl exclude [title]`
+Exclude games from batch downloads.
+
+```bash
+ps5dl exclude                            # List all excluded
+ps5dl exclude "Game Title"              # Add to exclusion list
+ps5dl exclude "Game Title" --remove     # Remove from exclusion list
+```
+
+---
+
+### `ps5dl dupe [query]`
+Find and mark web games as duplicates of local/completed games.
+
+```bash
+ps5dl dupe "Endling"
+```
+
+---
+
+### `ps5dl open <title>`
+Open the game's download page in your default browser.
+
+```bash
+ps5dl open "After The Fall"
+```
+
+---
+
+## 5. Download & Post-processing Pipeline
+
+### Region Priority
+Sections are tried in this order: **KOR (exFAT) → KOR → USA (exFAT) → EUR (exFAT) → USA → EUR → Other**
+
+### Backport Filtering
+For each section, the tool checks the content for `"Works on X.xx and higher"` notes:
+- If the required firmware ≤ `USER_FIRMWARE` → compatible, use this section
+- If the required firmware > `USER_FIRMWARE` → incompatible, skip to next section
+- If no note is found → fall back to region-name heuristic
+
+**Example** (`USER_FIRMWARE=7`):
+- Section: `"Works on 9.xx and higher"` → skip
+- BackPort section: `"Works on 7.xx and higher"` → selected and downloaded
+
+### Download Flow
+1. **Scraper**: Queries dlpsgame.com via WordPress REST API, bypassing Cloudflare Turnstile.
+2. **Link Decoder**: Decodes Base64 payloads, resolves `clk.sh` / `downloadgameps3.net` redirects.
+3. **Host Selection**: Prefers 1fichier → Datanodes. Falls back to browser-open for other hosts.
+4. **Dead Link Retry**: If a link is dead (404), skips that host and retries the same section with the next best host.
+5. **Download**:
+   - *Built-in*: Streams directly via 1fichier API or Datanodes multi-step flow.
+   - *FDM mode* (`DOWNLOAD_MANAGER=FDM`): Resolves direct URL first, then hands off to Free Download Manager CLI and polls until the file is stable.
+6. **exFAT failure handling**: If an exFAT section download fails, any partial `.exfat` file is renamed to `.failed` and the game is skipped entirely (no fallback to other sections).
+
+### Post-processing Flow
+After successful download:
+1. **Metadata**: Extracts `param.json` from the archive to get real `titleName`, `PPSA`, `version`.
+2. **Password detection**: Tests archive with no password, then tries `DLPSGAME.COM`, `dlpsgame.com`, and any scraped password.
+3. **If encrypted or split**:
+   - Extract with UnRAR/7z
+   - Flatten folder structure so `eboot.bin` is at the root
+   - Delete original archive(s)
+   - Recompress with Bandizip: `bz a -r -fmt:7z -l:7 "output.7z"`
+4. **If not encrypted**: Rename to `{Title} [PPSA][vXX.XX]{ext}` and keep as-is.
+5. **exFAT / raw files**: Compressed into `.7z` via Bandizip.
+6. **Registration**: Records the final filename in `data/downloaded.xml`.
+
+### Final File Naming
+| Scenario | Result |
+|----------|--------|
+| Encrypted/split archive | `{Title} [PPSA][ver].7z` |
+| Clean archive (no password) | `{Title} [PPSA][ver]{.rar/.zip/.7z}` |
+| exFAT raw image | `{Title} [PPSA][ver].7z` |
+| DLC, UNLOCK, UPDATE | `{Title} [PPSA][TYPE]{ext}` |
+| Failed exFAT download | `original_name.failed` |
 
 ---
 ---
@@ -170,159 +224,214 @@ When you run a download command:
 # 한글 가이드 (Korean Guide)
 
 ## 목차
-1. [사전 준비 작업](#1-사전-준비-작업)
-   - [LaunchBox 라이브러리 내보내기 (`PS5.xml`)](#launchbox-라이브러리-내보내기-ps5xml)
-   - [1fichier API 키 등록](#1fichier-api-키-등록)
-2. [환경 변수 설정 (`.env`)](#2-환경-변수-설정-env)
-3. [설치 방법](#3-설치-방법)
-4. [명령어 사용법](#4-명령어-사용법)
-5. [자동 다운로드 및 압축 해제 프로세스 흐름](#5-자동-다운로드-및-압축-해제-프로세스-흐름)
+1. [사전 준비 작업](#1-사전-준비-작업-1)
+2. [환경 변수 설정 (`.env`)](#2-환경-변수-설정-env-1)
+3. [설치 방법](#3-설치-방법-1)
+4. [명령어 사용법](#4-명령어-사용법-1)
+5. [다운로드 및 후처리 프로세스 흐름](#5-다운로드-및-후처리-프로세스-흐름)
 
 ---
 
 ## 1. 사전 준비 작업
 
-CLI 도구를 실행하기 전에 다음 작업이 사전에 완료되어 있어야 합니다.
-
 ### LaunchBox 라이브러리 내보내기 (`PS5.xml`)
-웹 데이터베이스와 로컬 보유 게임 목록을 매핑하여 아직 보유하지 않은 게임(TBD)을 골라내는 데 사용됩니다.
-1. **LaunchBox**를 실행하고 PS5 플랫폼 게임들을 선택한 뒤, 플레이리스트/라이브러리 XML 구조 파일로 내보내기(Export)를 수행합니다.
-2. 내보낸 XML 파일의 이름을 **`PS5.xml`**로 변경합니다.
-3. 해당 파일을 프로젝트 폴더 하위의 `data` 폴더 안에 복사해 넣습니다:
+1. **LaunchBox**에서 PS5 게임들을 플레이리스트 XML로 내보내기합니다.
+2. 파일명을 **`PS5.xml`**로 변경하여 다음 경로에 저장합니다:
    `C:\Code\PS5_Downloader\data\PS5.xml`
 
-### 1fichier API 키 등록
-웹 브라우저의 수동 조작 없이 고속 자동 다운로드를 활성화하려면 API 토큰이 필요합니다.
-1. [1fichier.com](https://1fichier.com/) 웹사이트에 로그인합니다. (API 토큰 발급 및 고속 다운로드 전송을 위해 Premium 또는 Bypass 이용권이 필요합니다.)
-2. 회원 정보 관리 또는 **API settings** 페이지로 이동합니다.
-3. 개인 **API Key**(API Token)를 복사합니다.
-4. 이 토큰값을 `.env` 파일의 `FICHIER_API_KEY` 항목에 붙여넣습니다.
+### 1fichier API 키
+1. [1fichier.com](https://1fichier.com/)에 로그인합니다 (Premium 또는 Bypass 구독 필요).
+2. API 설정 페이지에서 **API Key**를 복사합니다.
+3. `.env` 파일의 `FICHIER_API_KEY`에 붙여넣습니다.
+
+### Bandizip
+재압축에 사용됩니다. 반드시 아래 경로에 설치되어 있어야 합니다:
+`C:\Program Files\Bandizip\bz.exe`
+
+### Free Download Manager (선택 사항)
+`DOWNLOAD_MANAGER=FDM` 설정 시에만 필요합니다. 기본 경로:
+`C:\Program Files\Softdeluxe\Free Download Manager\fdm.exe`
 
 ---
 
 ## 2. 환경 변수 설정 (`.env`)
 
-프로젝트 루트 폴더(`C:\Code\PS5_Downloader\.env`)에 아래 내용으로 `.env` 파일을 작성하고 저장합니다.
-
 ```env
-# 1fichier API Key (외부에 노출되지 않도록 주의)
+# 1fichier API 키 (외부 노출 금지)
 FICHIER_API_KEY=사용자의_1fichier_api_key_입력
 
-# 다운로드 파일 및 압축 해제 폴더가 저장될 타겟 폴더
-DOWNLOAD_DIR=H:\Download
+# 다운로드 파일 저장 경로
+DOWNLOAD_DIR=C:\Z
 
-# 웹 크롤링 목록 로컬 캐싱 주기 (시간 단위)
+# 웹 목록 로컬 캐싱 유효 시간 (시간 단위)
 CACHE_TTL_HOURS=24
+
+# 현재 PS5 펌웨어 메이저 버전 (백포트 필터링 기준)
+# 이 값보다 높은 펌웨어를 요구하는 섹션은 자동으로 skip
+USER_FIRMWARE=7
+
+# 다운로드 매니저: 비워두면 내장 스트리머, FDM 시 Free Download Manager 사용
+DOWNLOAD_MANAGER=
+
+# FDM 사용 시 파일당 동시 연결 수
+DOWNLOADER_SESSION=3
 ```
 
-*참고: 툴이 처음 실행될 때 공식 `unrar.exe` 콘솔 실행 파일을 프로젝트의 `bin/` 폴더 내에 자동으로 다운로드하여 배치하므로, 사용자가 unrar나 7z을 수동으로 설치하거나 추가 설정하지 않아도 분할 압축 해제가 완벽하게 수행됩니다.*
+*`UnRAR.exe`는 첫 실행 시 `bin/` 폴더에 자동 다운로드·설치됩니다.*
 
 ---
 
 ## 3. 설치 방법
 
-1. 프로젝트 폴더 터미널(`C:\Code\PS5_Downloader`)을 실행합니다.
-2. 필요한 Node.js 의존성 패키지를 설치합니다:
-   ```bash
-   npm install
-   ```
-3. 전역 명령어 링크를 생성하여 언제 어디서나 바로 실행할 수 있도록 설정합니다:
-   ```bash
-   npm link
-   ```
-   *이제 시스템 어디에서나 `ps5dl` 명령어를 전역적으로 사용할 수 있습니다.*
+```bash
+npm install
+npm link
+```
+
+링크 완료 후 어디서나 `ps5dl` 명령어를 사용할 수 있습니다.
 
 ---
 
 ## 4. 명령어 사용법
 
-### 1. 게임 목록 확인 (`ps5dl list`)
-다양한 소스별 게임 목록을 조회합니다. 이름 검색(`--name`/`-n`) 및 출력 갯수 제한(`--limit`/`-l`) 옵션을 연동해 필터링할 수 있습니다.
-*   **전체 게임 목록 조회** (로컬, 웹, 다운로드 여부를 통합 표시):
-    ```bash
-    ps5dl list all
-    ```
-*   **로컬 라이브러리 목록 조회** (`data/PS5.xml` 파싱 결과):
-    ```bash
-    ps5dl list local
-    ```
-*   **다운로드 완료 목록 조회** (`data/downloaded.xml` 파싱 결과):
-    ```bash
-    ps5dl list downloaded
-    ```
-*   **웹 목록 조회**:
-    ```bash
-    ps5dl list web
-    ```
-*   **TBD(아직 받지 않은) 목록 조회** (웹 게임 중 로컬/완료 목록에 없고, 제외 대상이 아닌 게임):
-    ```bash
-    ps5dl list tbd
-    ```
-*   **필터링 검색 예시 (TBD 중 Spider-Man 검색어 필터링 후 10개만 출력)**:
-    ```bash
-    ps5dl list tbd -l 10 -n "Spider-Man"
-    ```
+### `ps5dl list [source]`
+다양한 소스별 게임 목록을 조회합니다. `--name`/`-n`, `--limit`/`-l` 필터 지원.
 
-### 2. 게임 다운로드 및 변환 (`ps5dl download`)
-*   **단건 게임 다운로드**:
-    ```bash
-    ps5dl download "Aeterna Noctis"
-    ```
-    *일치하는 게임이 여러 개 검색되면 번호 선택지(Prompt)가 제공됩니다.*
-*   **TBD 목록 상위 N개 일괄 순차 다운로드**:
-    ```bash
-    ps5dl download --limit 5
-    ```
-    *아직 다운로드받지 않은 상위 5개의 게임을 하나씩 순차적으로 자동 다운로드 및 압축 해제 작업을 수행합니다.*
+| Source | 설명 |
+|--------|------|
+| `all` | 로컬 + 웹 + 다운로드 상태 통합 |
+| `local` | `data/PS5.xml` 내 게임 |
+| `downloaded` | `data/downloaded.xml` 내 게임 |
+| `web` | dlpsgame.com 전체 목록 |
+| `tbd` | 로컬·완료 목록에 없는 미다운로드 게임 |
+| `excluded` | 배치 다운로드 제외 목록 |
 
-### 3. 다운로드 제외 관리 (`ps5dl exclude`)
-배치 다운로드 시 다운로드 대상에서 제외할 게임을 등록/해제 관리합니다.
-*   **제외 등록된 전체 목록 조회**:
-    ```bash
-    ps5dl exclude
-    ```
-*   **제외 게임 등록**:
-    ```bash
-    ps5dl exclude "Game Title Here"
-    ```
-*   **제외 게임 등록 해제**:
-    ```bash
-    ps5dl exclude "Game Title Here" --remove
-    ```
-
-### 4. 브라우저로 웹페이지 바로 열기 (`ps5dl open`)
-*   기본 웹 브라우저를 띄워 매칭되는 게임의 웹 페이지 정보를 엽니다:
-    ```bash
-    ps5dl open "After The Fall"
-    ```
-
-### 5. 다운로드 완료 수동 관리 (`ps5dl completed` 또는 `ps5dl download --completed`)
-실제 파일을 다운로드받지 않고도 로컬 데이터베이스(`downloaded.xml`)에 특정 게임을 다운로드 완료(완료 목록) 상태로 등록/해제 관리합니다.
-*   **완료 등록된 전체 목록 조회**:
-    ```bash
-    ps5dl completed
-    ```
-*   **게임 완료 등록 (수동 등록)**:
-    ```bash
-    ps5dl completed "Game Title Here"
-    # 또는
-    ps5dl download "Game Title Here" --completed
-    ```
-*   **완료 목록에서 제외 (등록 해제)**:
-    ```bash
-    ps5dl completed "Game Title Here" --remove
-    ```
+```bash
+ps5dl list tbd
+ps5dl list tbd -l 10 -n "Spider-Man"
+```
 
 ---
 
-## 5. 자동 다운로드 및 압축 해제 프로세스 흐름
+### `ps5dl download [title]`
+단건 또는 배치로 게임을 다운로드합니다.
 
-`download` 명령을 작동시키면 백그라운드에서 다음 과정이 한 번에 연동 구동됩니다:
-1. **Cloudflare Turnstile 보안 우회**: 웹 상세 정보 크롤링 시 차단 방지를 위해 WordPress REST API 엔드포인트를 호출하거나, 사전에 저장된 수동 로컬 HTML 캐시를 조회하여 Turnstile 봇 탐지 시스템을 원천 우회합니다.
-2. **링크 디코딩 & 파싱**: 암호화된 Base64 페이로드를 디코딩하고 `clk.sh` 단축 링크를 풀어서 원본 1fichier 링크 주소와 압축 비밀번호(`Password: DLPSGAME.COM`)를 자동 파싱합니다.
-3. **PPSA & 지역 우선순위 필터링**: 로컬 `PS5.xml` 내의 타겟 PPSA 코드와 지역 정보(한국어 패치 우선, 이외 USA -> EUR 순)를 대조해 최적의 다운로드 대상을 정렬 선별합니다.
-4. **스트리밍 다운로드**: 봇 차단 필터 방지를 위해 브라우저와 동일한 User-Agent 헤더 정보를 포함하여 1fichier API 다운로드 스트림을 받아 로컬 디스크에 임시 세이브합니다.
-5. **패스워드 확인 및 압축 해제**: 다운로드가 완료되면 임베디드 `unrar.exe`를 사용하여 압축 파일에 비밀번호가 걸려 있는지 테스트합니다.
-   - **패스워드가 걸려 있는 경우:** 해당 비밀번호를 주입하여 파일명과 동일한 이름의 폴더를 만들고 그 내부에 압축을 풉니다(Folder Format). 압축 해제가 완전히 성공적으로 완료되면 하드디스크 용량 확보를 위해 원본 다운로드 `.rar` 파일들을 자동으로 청소(삭제)합니다.
-   - **패스워드가 없는 경우:** 압축을 풀지 않고 원본 `.rar` 파일 구조 그대로 보존(ok)합니다.
-6. **기록**: 다운로드 데이터베이스 `data/downloaded.xml`에 최종 완료된 파일명(폴더명 또는 rar 파일명)을 기록하여 다운로드 완료 상태로 등록합니다.
+```bash
+# 단건 다운로드
+ps5dl download "Aeterna Noctis"
+
+# 배치 다운로드 (TBD 상위 5개)
+ps5dl download --limit 5
+
+# 저장 경로 재정의
+ps5dl download "Aeterna Noctis" --out "D:\CustomDownloads"
+
+# 특정 파일 타입만 다운로드 (GAME, DLC, UPDATE, BACKPORT, UNLOCK)
+ps5dl download "EA SPORTS FC 26" --type DLC
+
+# 아카이브 비밀번호 수동 지정
+ps5dl download "Game Title" --password "custom_password"
+
+# 실제 다운로드 없이 완료로 등록
+ps5dl download "Game Title" --completed
+```
+
+---
+
+### `ps5dl urldown <url>`
+1fichier·Datanodes·Vikingfile URL에서 직접 다운로드 후 후처리 파이프라인을 실행합니다.
+
+```bash
+ps5dl urldown "https://1fichier.com/?abc123"
+ps5dl urldown "https://datanodes.to/abc123" --password "DLPSGAME.COM"
+```
+
+---
+
+### `ps5dl completed [title]`
+완료 목록을 수동으로 관리합니다.
+
+```bash
+ps5dl completed                          # 완료 목록 조회
+ps5dl completed "Game Title"             # 완료로 등록
+ps5dl completed "Game Title" --remove    # 완료 목록에서 제거
+```
+
+---
+
+### `ps5dl exclude [title]`
+배치 다운로드 제외 목록을 관리합니다.
+
+```bash
+ps5dl exclude                            # 제외 목록 조회
+ps5dl exclude "Game Title"               # 제외 등록
+ps5dl exclude "Game Title" --remove      # 제외 해제
+```
+
+---
+
+### `ps5dl dupe [query]`
+로컬·완료 목록에 있는 게임의 중복 웹 타이틀을 찾아 완료로 표시합니다.
+
+```bash
+ps5dl dupe "Endling"
+```
+
+---
+
+### `ps5dl open <title>`
+매칭되는 게임의 웹 다운로드 페이지를 기본 브라우저로 엽니다.
+
+```bash
+ps5dl open "After The Fall"
+```
+
+---
+
+## 5. 다운로드 및 후처리 프로세스 흐름
+
+### 지역 우선순위
+섹션 시도 순서: **KOR (exFAT) → KOR → USA (exFAT) → EUR (exFAT) → USA → EUR → 기타**
+
+### 백포트 필터링
+각 섹션의 본문에서 `"Works on X.xx and higher"` 노트를 파싱합니다:
+- 요구 펌웨어 ≤ `USER_FIRMWARE` → 호환 → 해당 섹션 사용
+- 요구 펌웨어 > `USER_FIRMWARE` → 비호환 → 다음 섹션으로 skip
+- 노트 없음 → region 이름 기반 fallback 로직 적용
+
+**예시** (`USER_FIRMWARE=7`):
+- 섹션 `"Works on 9.xx and higher"` → skip
+- BackPort 섹션 `"Works on 7.xx and higher"` → 선택 및 다운로드
+
+### 다운로드 흐름
+1. **스크래퍼**: WordPress REST API로 dlpsgame.com 조회 (Cloudflare 차단 우회)
+2. **링크 디코더**: Base64 페이로드 해독, `clk.sh`·`downloadgameps3.net` 리다이렉트 처리
+3. **호스트 선택**: 1fichier → Datanodes 우선. 지원 불가 호스트는 브라우저 폴백
+4. **Dead link 재시도**: 링크 사망(404) 시 동일 섹션 내 다음 호스트로 재시도
+5. **다운로드**:
+   - *내장 모드*: 1fichier API 스트리밍 또는 Datanodes 다단계 흐름
+   - *FDM 모드* (`DOWNLOAD_MANAGER=FDM`): direct URL 취득 후 FDM CLI에 위임, 파일 완료 시까지 폴링
+6. **exFAT 실패 처리**: exFAT 섹션 다운로드 실패 시 `.exfat` → `.failed` 리네임 후 해당 게임 skip (다른 섹션 시도 없음)
+
+### 후처리 흐름
+다운로드 완료 후:
+1. **메타데이터**: `param.json` 부분 추출로 실제 타이틀·PPSA·버전 파싱
+2. **비밀번호 감지**: 비밀번호 없이 시도 → `DLPSGAME.COM` → `dlpsgame.com` → 스크랩 비밀번호 순차 대입
+3. **암호화·분할 압축인 경우**:
+   - UnRAR/7z로 추출
+   - `eboot.bin`이 루트가 되도록 폴더 구조 평탄화
+   - 원본 아카이브 삭제
+   - Bandizip으로 재압축: `bz a -r -fmt:7z -l:7 "output.7z"`
+4. **비암호화인 경우**: `{Title} [PPSA][vXX.XX]{ext}` 포맷으로 리네임 보존
+5. **exFAT 파일**: Bandizip으로 `.7z` 압축
+6. **등록**: `data/downloaded.xml`에 최종 파일명 기록
+
+### 최종 파일명 규칙
+
+| 상황 | 결과물 |
+|------|--------|
+| 암호화·분할 압축 아카이브 | `{Title} [PPSA][ver].7z` |
+| 무암호 아카이브 | `{Title} [PPSA][ver]{.rar/.zip/.7z}` |
+| exFAT raw 이미지 | `{Title} [PPSA][ver].7z` |
+| DLC, UNLOCK, UPDATE | `{Title} [PPSA][TYPE]{ext}` |
+| exFAT 다운로드 실패 | `original_name.failed` |

@@ -15,11 +15,18 @@ const REROUTE_DOMAIN = 'downloadgameps3.net';
  */
 function getRegionPriority(regionName) {
   const region = regionName.toUpperCase();
-  if (region.includes('KOR')) return 0;
-  if (region.includes('EXFAT')) return 1;
-  if (region.includes('USA')) return 2;
-  if (region.includes('EUR') || region.includes('EURO')) return 3;
-  return 4; // Other
+  const isExfat = region.includes('EXFAT');
+
+  if (region.includes('KOR')) {
+    return isExfat ? 0 : 1;
+  }
+  if (region.includes('USA')) {
+    return isExfat ? 2 : 4;
+  }
+  if (region.includes('EUR') || region.includes('EURO')) {
+    return isExfat ? 3 : 5;
+  }
+  return isExfat ? 6 : 7;
 }
 
 // Download host priority. Lower index represents higher priority.
@@ -54,35 +61,56 @@ function getHostNameFromUrl(url) {
 }
 
 /**
- * Detects type of file from paragraph text, url, or label
+ * Extracts the minimum firmware version from "Works on X.xx and higher" style notes.
+ * Returns the major version number (e.g. 7 for "7.xx"), or null if not found.
  */
+function extractFirmwareRequirement(text) {
+  const lower = text.toLowerCase();
+
+  // "Works on [FW] X.xx" — most common pattern on the site
+  let m = lower.match(/works\s+on\s+(?:fw\s+)?(\d+)\.(?:xx|\d+)/);
+  if (m) return parseInt(m[1], 10);
+
+  m = lower.match(/works\s+on\s+(?:fw\s+)?(\d+)xx/);
+  if (m) return parseInt(m[1], 10);
+
+  // "X.xx and higher / above / +"
+  m = lower.match(/(\d+)\.(?:xx|\d+)\s+(?:and|or)\s+(?:higher|above)/);
+  if (m) return parseInt(m[1], 10);
+
+  m = lower.match(/(\d+)xx\s+(?:and|or)\s+(?:higher|above)/);
+  if (m) return parseInt(m[1], 10);
+
+  // "Note: X.xx ..." where X.xx is followed by higher/above/+
+  m = lower.match(/note\s*:\s*(\d+)\.(?:xx|\d+)\s*(?:and\s+(?:higher|above)|\+)?/);
+  if (m) return parseInt(m[1], 10);
+
+  return null;
+}
+
 /**
- * Helper to determine if a backport should be dropped (if firmware < 7.00).
+ * Helper to determine if a backport should be dropped based on the user's firmware.
+ * Used as a FALLBACK when no "Works on X.xx" note is found in the section content.
  */
 function shouldDropBackport(text, url = '', label = '') {
+  const userFirmware = parseInt(process.env.USER_FIRMWARE || '7', 10);
   const lower = (text + ' ' + url + ' ' + label).toLowerCase();
-  
-  // Find all firmware versions mentioned
+
   const versions = [];
   const matches = lower.match(/\b(3|4|5|6|7|8|9|10|11)\.(?:xx|[0-9]+)\b/g) || [];
   const xxMatches = lower.match(/\b(3|4|5|6|7|8|9|10|11)xx\b/g) || [];
-  
+
   for (const m of matches.concat(xxMatches)) {
     const numMatch = m.match(/\d+/);
-    if (numMatch) {
-      versions.push(parseInt(numMatch[0], 10));
-    }
+    if (numMatch) versions.push(parseInt(numMatch[0], 10));
   }
-  
+
   if (versions.length > 0) {
-    // Keep only if the target (minimum) firmware version is >= 7
-    // For example, "4.xx & 8.xx" targets 4.xx, so minVersion is 4, which is dropped.
     const minVersion = Math.min(...versions);
-    return minVersion < 7;
+    return minVersion < userFirmware;
   }
-  
-  // Default: if no firmware is mentioned, drop it (safer for PS5 <7.00 backports)
-  return true;
+
+  return true; // Default: drop if no version info
 }
 
 /**
@@ -108,21 +136,27 @@ function detectTypeFromText(text, url = '', label = '') {
 }
 
 /**
- * Decodes base64 payload and extracts password and direct/reroute links grouped by paragraph/block.
- * 
- * @param {string} base64Payload 
- * @returns {{groups: Array<{type: string, links: Array<{label: string, url: string}>}>, password: string}}
+ * Decodes base64 payload and extracts password, download link groups, and firmware requirement.
+ *
+ * firmwareRequirement: the minimum firmware version parsed from "Works on X.xx and higher" notes.
+ * When non-null, getBestDownloadLinks uses it for section compatibility instead of region-name heuristics.
+ *
+ * @param {string} base64Payload
+ * @returns {{groups: Array<{type: string, links: Array<{label: string, url: string}>}>, password: string, firmwareRequirement: number|null}}
  */
 function decodeAndExtractLinks(base64Payload) {
   const decoded = Buffer.from(base64Payload, 'base64').toString('utf-8');
-  
+
   // Try to parse as JSON first (used in newer game pages)
   try {
     const data = JSON.parse(decoded);
     if (data && (Array.isArray(data.URLS) || Array.isArray(data.urls))) {
       const urls = data.URLS || data.urls || [];
       const password = data.Password || data.password || '';
-      
+
+      // Extract firmware requirement from the raw JSON string (covers Note/comment fields)
+      const firmwareRequirement = extractFirmwareRequirement(decoded);
+
       const groups = [];
       for (const url of urls) {
         let trimmedUrl = (url || '').trim();
@@ -132,28 +166,23 @@ function decodeAndExtractLinks(base64Payload) {
           if (urlMatch) {
             try {
               const decodedUrl = Buffer.from(decodeURIComponent(urlMatch[1]), 'base64').toString('utf-8');
-              if (decodedUrl.startsWith('http')) {
-                trimmedUrl = decodedUrl;
-              }
-            } catch (e) {
-              // ignore
-            }
+              if (decodedUrl.startsWith('http')) trimmedUrl = decodedUrl;
+            } catch (e) {}
           }
         }
-        
+
         if (trimmedUrl && !EXCLUDED_DOMAINS.some(domain => trimmedUrl.includes(domain))) {
           const type = detectTypeFromText('', trimmedUrl, '');
-          if (type === 'BACKPORT' && shouldDropBackport('', trimmedUrl, '')) {
-            continue; // Drop backports for firmware < 7.00
+          // BACKPORT URL filtering: only apply old heuristic when section has no firmware note.
+          // When firmwareRequirement is present, section-level filter in getBestDownloadLinks handles it.
+          if (type === 'BACKPORT' && firmwareRequirement === null && shouldDropBackport('', trimmedUrl, '')) {
+            continue;
           }
-          groups.push({
-            type,
-            links: [{ label: 'Link', url: trimmedUrl }]
-          });
+          groups.push({ type, links: [{ label: 'Link', url: trimmedUrl }] });
         }
       }
-      
-      return { groups, password };
+
+      return { groups, password, firmwareRequirement };
     }
   } catch (err) {
     // Parsing failed, proceed with Cheerio HTML parsing
@@ -165,6 +194,9 @@ function decodeAndExtractLinks(base64Payload) {
   const passwordMatch = $.text().match(/Pas+w?ord\s*:\s*([^\s<\n]+)/i);
   const password = passwordMatch ? passwordMatch[1].trim() : '';
 
+  // Extract firmware requirement from full text content
+  const firmwareRequirement = extractFirmwareRequirement($.text());
+
   const groups = [];
 
   // Group by paragraphs (<p>), list items (<li>), or divs if they contain links
@@ -175,29 +207,22 @@ function decodeAndExtractLinks(base64Payload) {
       let url = ($(el).attr('href') || '').trim();
       const dataDomain = ($(el).attr('data-domain') || '').trim();
       const dataPath = ($(el).attr('data-path') || '').trim();
-      
-      if (dataDomain && dataPath) {
-        url = dataDomain + dataPath;
-      }
-      
+
+      if (dataDomain && dataPath) url = dataDomain + dataPath;
+
       const label = $(el).text().trim() || 'Link';
-      
+
       // Decode shorteners / click bypasses (e.g. clk.sh) containing base64 URL param
       if (url.includes('url=')) {
         const urlMatch = url.match(/[?&]url=([^&]+)/);
         if (urlMatch) {
           try {
             const decodedUrl = Buffer.from(decodeURIComponent(urlMatch[1]), 'base64').toString('utf-8');
-            if (decodedUrl.startsWith('http')) {
-              url = decodedUrl;
-            }
-          } catch (e) {
-            // ignore
-          }
+            if (decodedUrl.startsWith('http')) url = decodedUrl;
+          } catch (e) {}
         }
       }
 
-      // Filter out help guides and tools
       if (url && !EXCLUDED_DOMAINS.some(domain => url.includes(domain))) {
         blockLinks.push({ label, url });
       }
@@ -205,8 +230,9 @@ function decodeAndExtractLinks(base64Payload) {
 
     if (blockLinks.length > 0) {
       const type = detectTypeFromText(blockText || $(blockEl).text());
-      if (type === 'BACKPORT' && shouldDropBackport(blockText || $(blockEl).text())) {
-        return; // Drop backports for firmware < 7.00
+      // BACKPORT URL filtering: only apply old heuristic when section has no firmware note
+      if (type === 'BACKPORT' && firmwareRequirement === null && shouldDropBackport(blockText || $(blockEl).text())) {
+        return;
       }
       groups.push({ type, links: blockLinks });
     }
@@ -219,24 +245,18 @@ function decodeAndExtractLinks(base64Payload) {
       let url = ($(el).attr('href') || '').trim();
       const dataDomain = ($(el).attr('data-domain') || '').trim();
       const dataPath = ($(el).attr('data-path') || '').trim();
-      
-      if (dataDomain && dataPath) {
-        url = dataDomain + dataPath;
-      }
-      
+
+      if (dataDomain && dataPath) url = dataDomain + dataPath;
+
       const label = $(el).text().trim() || 'Link';
-      
+
       if (url.includes('url=')) {
         const urlMatch = url.match(/[?&]url=([^&]+)/);
         if (urlMatch) {
           try {
             const decodedUrl = Buffer.from(decodeURIComponent(urlMatch[1]), 'base64').toString('utf-8');
-            if (decodedUrl.startsWith('http')) {
-              url = decodedUrl;
-            }
-          } catch (e) {
-            // ignore
-          }
+            if (decodedUrl.startsWith('http')) url = decodedUrl;
+          } catch (e) {}
         }
       }
 
@@ -246,25 +266,30 @@ function decodeAndExtractLinks(base64Payload) {
     });
 
     if (flatLinks.length > 0) {
-      const type = detectTypeFromText('');
-      groups.push({ type, links: flatLinks });
+      groups.push({ type: detectTypeFromText(''), links: flatLinks });
     }
   }
 
-  return { groups, password };
+  return { groups, password, firmwareRequirement };
 }
 
 /**
  * Evaluates all subpage sections for targetPPSA, sorts by region priority,
  * resolves reroutes if necessary, and returns the best download host and URLs.
- * 
+ *
+ * Section compatibility with user firmware:
+ *   - If section content has "Works on X.xx and higher" → use X.xx vs USER_FIRMWARE to decide.
+ *   - If no such note → fall back to region-name heuristic (shouldDropBackport).
+ *
  * @param {Array<{ppsa: string, region: string, base64Payload: string}>} sections
  * @param {string} targetPPSA
  * @returns {Promise<{urls: string[], urlInfo: Array<{url: string, type: string}>, password: string, region: string, hostName: string}>}
  */
 async function getBestDownloadLinks(sections, targetPPSA, { skipHosts = [] } = {}) {
+  const userFirmware = parseInt(process.env.USER_FIRMWARE || '7', 10);
+
   // 1. Filter sections matching targetPPSA (if targetPPSA is specified)
-  const matchingSections = targetPPSA 
+  const matchingSections = targetPPSA
     ? sections.filter(sec => sec.ppsa === targetPPSA)
     : sections;
 
@@ -272,28 +297,28 @@ async function getBestDownloadLinks(sections, targetPPSA, { skipHosts = [] } = {
     throw new Error(`No sections found matching PPSA: ${targetPPSA}`);
   }
 
-  // 2. Drop sections whose region name explicitly marks them as backports with firmware < 7.00.
-  // We check the region name (e.g. "EUR (BackPort 4.xx) (exFAT)") rather than the section
-  // body because the body contains credits text like "Kira for the BackPort" that would
-  // create false positives.
-  const filteredSections = matchingSections.filter(section => {
-    if (/backport/i.test(section.region) && shouldDropBackport(section.region)) return false;
-    return true;
-  });
-
-  if (filteredSections.length === 0) {
-    throw new Error(`No sections found after filtering backports for PPSA: ${targetPPSA}`);
-  }
-
-  // 3. Sort by region priority
-  filteredSections.sort((a, b) => {
-    return getRegionPriority(a.region) - getRegionPriority(b.region);
-  });
+  // 2. Sort by region priority
+  matchingSections.sort((a, b) => getRegionPriority(a.region) - getRegionPriority(b.region));
 
   // Try each region section in order of priority (in case of failure to extract/resolve)
-  for (const section of filteredSections) {
+  for (const section of matchingSections) {
     try {
-      const { groups, password } = decodeAndExtractLinks(section.base64Payload);
+      const { groups, password, firmwareRequirement } = decodeAndExtractLinks(section.base64Payload);
+
+      // 3. Firmware compatibility check
+      if (firmwareRequirement !== null) {
+        // Content has an explicit "Works on X.xx and higher" note — use it
+        if (firmwareRequirement > userFirmware) {
+          // This section requires higher firmware than user has → skip
+          continue;
+        }
+        // firmwareRequirement <= userFirmware → compatible, proceed
+      } else {
+        // No firmware note in content — fall back to region-name heuristic
+        if (/backport/i.test(section.region) && shouldDropBackport(section.region)) {
+          continue;
+        }
+      }
       
       let finalUrls = [];
       let finalUrlInfos = [];
@@ -301,6 +326,12 @@ async function getBestDownloadLinks(sections, targetPPSA, { skipHosts = [] } = {
 
       // Resolve and select links for each group (asset) independently
       for (const group of groups) {
+        if (group.type === 'BACKPORT' || group.type === 'BACK') {
+          const isRequired = (firmwareRequirement !== null && firmwareRequirement > userFirmware);
+          if (!isRequired) {
+            continue; // Skip downloading this backport as it is not needed
+          }
+        }
         let candidates = [];
 
         const directLinks = group.links.filter(l => !l.url.includes(REROUTE_DOMAIN));

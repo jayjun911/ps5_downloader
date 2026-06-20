@@ -87,15 +87,29 @@ function saveDownloadedGames(games) {
 function addDownloadedGame({ title, fileName, ppsa, password, source, region }) {
   const games = loadDownloadedGames();
   
-  // Prevent duplicate logs for the same game PPSA and region
-  // If PPSA is Unknown, check if the title already exists to prevent duplicates.
+  let existingGame = null;
   const exists = games.some(g => {
-    if (ppsa && ppsa !== 'Unknown' && g.ppsa && g.ppsa !== 'Unknown') {
-      return g.ppsa === ppsa && g.region === region;
+    if (normalizeTitle(g.title) === normalizeTitle(title)) {
+      return true;
     }
-    return normalizeTitle(g.title) === normalizeTitle(title);
+    if (source === 'Manual' || source === 'Manual (Dupe)') {
+      return false;
+    }
+    if (ppsa && ppsa !== 'Unknown' && g.ppsa && g.ppsa !== 'Unknown') {
+      if (g.ppsa === ppsa && g.region === region) {
+        existingGame = g;
+        return true;
+      }
+    }
+    return false;
   });
-  if (exists) return;
+  if (exists) {
+    if (existingGame && normalizeTitle(existingGame.title) !== normalizeTitle(title)) {
+      existingGame.title = title;
+      saveDownloadedGames(games);
+    }
+    return;
+  }
 
   games.push({
     title,
