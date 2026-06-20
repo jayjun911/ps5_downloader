@@ -207,6 +207,25 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
             fs.renameSync(currentPath, actualRenamedPath);
           }
 
+          // Validate exFAT filesystem via OSFMount + chkdsk before compressing
+          if (ext === '.exfat') {
+            const { validateExfat } = require('../services/osfmountService');
+            compressSpinner.text = `[${type}] Validating exFAT filesystem...`;
+            const { valid, message, skipped } = await validateExfat(actualRenamedPath, (s) => {
+              compressSpinner.text = `[${type}] ${s}`;
+            });
+            if (skipped) {
+              compressSpinner.text = `[${type}] Compressing "${path.basename(actualRenamedPath)}" to 7z...`;
+            } else if (!valid) {
+              const valErr = new Error(`exFAT validation failed: filesystem errors detected`);
+              valErr.isExfatValidationError = true;
+              throw valErr;
+            } else {
+              logger.success(`[${type}] exFAT validation passed`);
+              compressSpinner.text = `[${type}] Compressing "${path.basename(actualRenamedPath)}" to 7z...`;
+            }
+          }
+
           await compressFileTo7z(actualRenamedPath, dest7zPath);
           if (!fs.existsSync(dest7zPath) || fs.statSync(dest7zPath).size === 0) {
             throw new Error('Output 7z is empty.');
@@ -215,6 +234,10 @@ async function processDownloadedFiles({ downloadedFiles, downloadDir, password =
           compressSpinner.succeed(`[${type}] Renamed and compressed to: ${baseName}.7z`);
           registeredFiles.push({ fileName: `${baseName}.7z`, type });
         } catch (compErr) {
+          if (compErr.isExfatValidationError) {
+            compressSpinner.fail(`[${type}] exFAT validation failed — filesystem errors detected`);
+            throw compErr; // propagate: download.js will rename .exfat → .failed
+          }
           compressSpinner.fail(`[${type}] Processing failed: ${compErr.message}. Keeping original file.`);
           const finalName = path.basename(actualRenamedPath);
           registeredFiles.push({ fileName: finalName, type });

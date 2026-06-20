@@ -151,12 +151,7 @@ async function downloadSingleGame(game, options = {}) {
           const totalParts = downloadUrls.length;
           let partIdx = 1;
 
-          const useFdm = (process.env.DOWNLOAD_MANAGER || '').toUpperCase() === 'FDM';
-          if (useFdm) {
-            const { downloadWithFdm } = require('../services/fdmDownloader');
-            // Preload to surface missing-exe errors early
-            void downloadWithFdm;
-          }
+          const useFdm = !!(process.env.DOWNLOAD_MANAGER || '').trim();
 
           for (const fileUrl of downloadUrls) {
             const partLabel = totalParts > 1 ? ` (Part ${partIdx}/${totalParts})` : '';

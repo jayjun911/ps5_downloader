@@ -4,7 +4,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 const logger = require('../utils/logger');
 
-const FDM_EXE = 'C:\\Program Files\\Softdeluxe\\Free Download Manager\\fdm.exe';
+const FDM_EXE = process.env.DOWNLOAD_MANAGER || 'C:\\Program Files\\Softdeluxe\\Free Download Manager\\fdm.exe';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
 
 function getFilenameFromDisposition(disposition) {
