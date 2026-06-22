@@ -61,6 +61,37 @@ async function fetchHtml(url) {
 const logger = require('../utils/logger');
 
 async function getWebGameList(forceRefresh = false) {
+  const manualListPath = path.join(CACHE_DIR, 'manual-list.html');
+  if (fs.existsSync(manualListPath)) {
+    try {
+      logger.info(`Using manually provided main game list from ${manualListPath}`);
+      const html = fs.readFileSync(manualListPath, 'utf-8');
+      const $ = cheerio.load(html);
+      const games = [];
+      $('ol.display-posts-listing li.listing-item a.title').each((_, el) => {
+        const title = $(el).text().trim();
+        const href = $(el).attr('href') || '';
+        if (href) {
+          const urlParts = href.replace(/\/$/, '').split('/');
+          const slug = urlParts[urlParts.length - 1];
+          games.push({
+            title,
+            url: href,
+            slug,
+            normalizedTitle: normalizeTitle(title)
+          });
+        }
+      });
+      if (games.length > 0) {
+        ensureDirectoryExistence(WEB_LIST_CACHE);
+        fs.writeFileSync(WEB_LIST_CACHE, JSON.stringify(games, null, 2), 'utf-8');
+        return games;
+      }
+    } catch (manualErr) {
+      logger.error('Failed to parse manual-list.html', manualErr);
+    }
+  }
+
   if (!forceRefresh && fs.existsSync(WEB_LIST_CACHE)) {
     const stats = fs.statSync(WEB_LIST_CACHE);
     const age = Date.now() - stats.mtimeMs;
@@ -82,23 +113,41 @@ async function getWebGameList(forceRefresh = false) {
     }
   }
 
-  const url = 'https://dlpsgame.com/list-game-ps5/';
   let html = '';
   let usingFallback = false;
 
+  // Try WordPress REST API first — bypasses Cloudflare
   try {
-    html = await fetchHtml(url);
-    if (html && (html.includes('Just a moment...') || html.includes('challenges.cloudflare.com'))) {
-      throw new Error('Cloudflare Turnstile challenge detected.');
+    const apiRes = await axios.get('https://dlpsgame.com/wp-json/wp/v2/pages?slug=list-game-ps5', {
+      headers: { 'User-Agent': USER_AGENT },
+      timeout: 15000
+    });
+    if (apiRes.data && Array.isArray(apiRes.data) && apiRes.data[0]?.content?.rendered) {
+      html = apiRes.data[0].content.rendered;
     }
-  } catch (err) {
-    const localFilePath = path.join(__dirname, '../../Initial Plan/game list element.txt');
-    if (fs.existsSync(localFilePath)) {
-      html = fs.readFileSync(localFilePath, 'utf-8');
-      logger.warn('Cloudflare challenge detected. Using local fallback game list: "Initial Plan/game list element.txt"');
-      usingFallback = true;
-    } else {
-      throw err;
+  } catch (apiErr) {
+    // ignore, fall through to direct fetch
+  }
+
+  // Direct fetch fallback
+  if (!html) {
+    const url = forceRefresh
+      ? `https://dlpsgame.com/list-game-ps5/?_t=${Date.now()}`
+      : 'https://dlpsgame.com/list-game-ps5/';
+    try {
+      html = await fetchHtml(url);
+      if (html && (html.includes('Just a moment...') || html.includes('challenges.cloudflare.com'))) {
+        throw new Error('Cloudflare Turnstile challenge detected.');
+      }
+    } catch (err) {
+      const localFilePath = path.join(__dirname, '../../Initial Plan/game list element.txt');
+      if (fs.existsSync(localFilePath)) {
+        html = fs.readFileSync(localFilePath, 'utf-8');
+        logger.warn('Cloudflare challenge detected. Using local fallback game list: "Initial Plan/game list element.txt"');
+        usingFallback = true;
+      } else {
+        throw err;
+      }
     }
   }
 

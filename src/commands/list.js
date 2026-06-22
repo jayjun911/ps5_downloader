@@ -24,6 +24,10 @@ async function listCommand(source = 'all', options = {}) {
       normalizedSource = 'dl';
     }
     
+    if (['all', 'web', 'tbd'].includes(normalizedSource) && options.refresh) {
+      logger.info('Refreshing web game list cache...');
+    }
+    
     const { getWebGameStatus } = require('../utils/gameMatcher');
     const progressSet = loadProgressSet();
 
@@ -62,7 +66,7 @@ async function listCommand(source = 'all', options = {}) {
         normalizedTitle: g.normalizedTitle
       }));
     } else if (normalizedSource === 'web') {
-      const webList = await getWebGameList();
+      const webList = await getWebGameList(!!options.refresh);
       displayList = webList.map(g => ({
         title: g.title,
         ppsa: '',
@@ -77,7 +81,7 @@ async function listCommand(source = 'all', options = {}) {
         normalizedTitle: g.normalizedTitle
       }));
     } else if (normalizedSource === 'tbd') {
-      const webList = await getWebGameList();
+      const webList = await getWebGameList(!!options.refresh);
       displayList = [];
       for (const g of webList) {
         const matchInfo = getWebGameStatus(g, localMap, dlMap, excludedSet, localPpsaMap, dlPpsaMap, progressSet);
@@ -91,7 +95,7 @@ async function listCommand(source = 'all', options = {}) {
         }
       }
     } else if (normalizedSource === 'all') {
-      const webList = await getWebGameList();
+      const webList = await getWebGameList(!!options.refresh);
       const processedNormalized = new Set();
 
       // Process web list and check against local, downloaded, & excluded

@@ -161,7 +161,7 @@ async function downloadSingleGame(game, options = {}) {
 
       let currentHostName = null;
       try {
-        const bestLinks = await getBestDownloadLinks([section], null, { skipHosts });
+        const bestLinks = await getBestDownloadLinks([section], null, { skipHosts, forceSection: !!options.section });
         currentHostName = bestLinks.hostName;
         
         // Filter bestLinks.urls based on targetType if specified
@@ -555,7 +555,11 @@ async function downloadCommand(titleQuery, options = {}) {
       rl.close();
       const num = parseInt(answer.trim(), 10);
       if (num > 0 && num <= matches.length) {
-        await downloadSingleGame(matches[num - 1], options);
+        try {
+          await downloadSingleGame(matches[num - 1], options);
+        } catch (err) {
+          if (!err.isHandled) logger.error(err.message);
+        }
       } else {
         logger.info('Cancelled.');
       }

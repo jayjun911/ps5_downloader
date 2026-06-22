@@ -18,6 +18,7 @@ program
   .argument('[source]', 'Game source to display: all, local, dl/downloaded, web, tbd, excluded', 'all')
   .option('-n, --name <query>', 'Search query for game title or PPSA code')
   .option('-l, --limit <number>', 'Limit the number of displayed results')
+  .option('-r, --refresh', 'Force refresh the web game list cache')
   .description('List and search games from local database and web lists')
   .action((source, options) => {
     listCommand(source, options);

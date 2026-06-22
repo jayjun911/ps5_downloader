@@ -286,7 +286,7 @@ function decodeAndExtractLinks(base64Payload) {
  * @param {string} targetPPSA
  * @returns {Promise<{urls: string[], urlInfo: Array<{url: string, type: string}>, password: string, region: string, hostName: string}>}
  */
-async function getBestDownloadLinks(sections, targetPPSA, { skipHosts = [] } = {}) {
+async function getBestDownloadLinks(sections, targetPPSA, { skipHosts = [], forceSection = false } = {}) {
   const userFirmware = parseInt(process.env.USER_FIRMWARE || '7', 10);
 
   // 1. Filter sections matching targetPPSA (if targetPPSA is specified)
@@ -307,19 +307,18 @@ async function getBestDownloadLinks(sections, targetPPSA, { skipHosts = [] } = {
   for (const section of matchingSections) {
     try {
       const { groups, password, firmwareRequirement } = decodeAndExtractLinks(section.base64Payload);
-      // 3. Firmware compatibility check
-      if (firmwareRequirement !== null) {
-        // Content has an explicit "Works on X.xx and higher" note — use it
-        if (firmwareRequirement > userFirmware) {
-          logger.warn(`[${section.region}] Requires firmware ${firmwareRequirement}.xx but USER_FIRMWARE=${userFirmware} — saving as fallback`);
-          firmwareMismatchSections.push({ section, groups, password, firmwareRequirement });
-          continue;
-        }
-        // firmwareRequirement <= userFirmware → compatible, proceed
-      } else {
-        // No firmware note in content — fall back to region-name heuristic
-        if (/backport/i.test(section.region) && shouldDropBackport(section.region)) {
-          continue;
+      // 3. Firmware compatibility check (skipped when user explicitly selected this section)
+      if (!forceSection) {
+        if (firmwareRequirement !== null) {
+          if (firmwareRequirement > userFirmware) {
+            logger.warn(`[${section.region}] Requires firmware ${firmwareRequirement}.xx but USER_FIRMWARE=${userFirmware} — saving as fallback`);
+            firmwareMismatchSections.push({ section, groups, password, firmwareRequirement });
+            continue;
+          }
+        } else {
+          if (/backport/i.test(section.region) && shouldDropBackport(section.region)) {
+            continue;
+          }
         }
       }
       
