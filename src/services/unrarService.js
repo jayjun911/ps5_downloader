@@ -273,31 +273,46 @@ function findEbootDir(dir) {
 }
 
 function flattenFolderToEboot(destFolder) {
+  // eboot.bin may sit several wrapper folders below destFolder, e.g.
+  // destFolder/Game/Game_v1.00/{sce_sys, eboot.bin}. findEbootDir gives us its
+  // exact location, so we resolve the whole path once and promote everything
+  // along it to destFolder in a single downward pass — no fixed retry count.
   const ebootDir = findEbootDir(destFolder);
   if (!ebootDir) {
     logger.warn(`eboot.bin was not found in the extracted files of: ${destFolder}`);
     return;
   }
-
   if (path.resolve(ebootDir) === path.resolve(destFolder)) {
-    logger.info(`eboot.bin is already at the root of ${destFolder}`);
-    return;
+    return; // eboot.bin already at root, nothing to flatten
   }
 
   logger.info(`Promoting folder containing eboot.bin to root: ${ebootDir}`);
 
-  const relative = path.relative(destFolder, ebootDir);
-  const topLevelName = relative.split(/[\\/]/)[0];
-  const topLevelPath = path.join(destFolder, topLevelName);
+  const parts = path.relative(destFolder, ebootDir).split(/[\\/]/);
 
-  for (const item of fs.readdirSync(ebootDir)) {
-    const srcPath = path.join(ebootDir, item);
-    const destPath = path.join(destFolder, item);
-    if (path.resolve(srcPath) === path.resolve(topLevelPath)) continue;
-    fs.renameSync(srcPath, destPath);
+  // Rename the top wrapper aside first so promoting a same-named nested folder
+  // can't collide with the wrapper mid-move.
+  const tmpPath = path.join(destFolder, `__flatten_tmp_${Date.now()}`);
+  fs.renameSync(path.join(destFolder, parts[0]), tmpPath);
+
+  // Walk the chain down to ebootDir. At each level promote every item except
+  // the next container in the path, preserving sibling game-data folders.
+  let container = tmpPath;
+  for (let i = 0; i < parts.length; i++) {
+    const nextName = i + 1 < parts.length ? parts[i + 1] : null;
+    for (const item of fs.readdirSync(container)) {
+      if (item === nextName) continue; // descend into this one on the next pass
+      const dst = path.join(destFolder, item);
+      if (fs.existsSync(dst)) {
+        logger.warn(`Flatten: ${item} already exists at destination, skipping`);
+        continue;
+      }
+      fs.renameSync(path.join(container, item), dst);
+    }
+    if (nextName) container = path.join(container, nextName);
   }
 
-  fs.rmSync(topLevelPath, { recursive: true, force: true });
+  try { fs.rmSync(tmpPath, { recursive: true, force: true }); } catch (e) {}
   logger.success(`Successfully flattened folder structure for: ${destFolder}`);
 }
 
