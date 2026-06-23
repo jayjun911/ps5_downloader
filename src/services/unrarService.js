@@ -88,7 +88,15 @@ async function extractRarArchive(rarFilePath, destFolder, password) {
   // Don't collapse whitespace in the command: archive/dest paths and inner names
   // can contain runs of consecutive spaces, and squashing them breaks matching.
   const cmd = `"${bz}" x -y ${pwd} -o:"${destFolder}" "${rarFilePath}"`;
-  execSync(cmd, { stdio: 'ignore' });
+  try {
+    // Capture stderr only so a failure surfaces bz's actual reason. stdout is left
+    // ignored on purpose — bz x prints every extracted file there, which would
+    // overflow execSync's default maxBuffer on large archives.
+    execSync(cmd, { stdio: ['ignore', 'ignore', 'pipe'] });
+  } catch (err) {
+    const reason = (err.stderr && err.stderr.toString().trim()) || err.message;
+    throw new Error(`bz extraction failed: ${reason}`);
+  }
 }
 
 /**
