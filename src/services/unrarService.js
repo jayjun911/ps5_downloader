@@ -85,7 +85,9 @@ async function extractRarArchive(rarFilePath, destFolder, password) {
   }
 
   const pwd = password ? `-p:${password}` : '';
-  const cmd = `"${bz}" x -y ${pwd} -o:"${destFolder}" "${rarFilePath}"`.replace(/\s+/g, ' ').trim();
+  // Don't collapse whitespace in the command: archive/dest paths and inner names
+  // can contain runs of consecutive spaces, and squashing them breaks matching.
+  const cmd = `"${bz}" x -y ${pwd} -o:"${destFolder}" "${rarFilePath}"`;
   execSync(cmd, { stdio: 'ignore' });
 }
 
@@ -96,7 +98,7 @@ function findParamPathInArchive(bz, archivePath, pwd) {
   const pwdFlag = pwd ? `-p:${pwd}` : '';
   try {
     const output = execSync(
-      `"${bz}" l ${pwdFlag} "${archivePath}"`.replace(/\s+/g, ' ').trim(),
+      `"${bz}" l ${pwdFlag} "${archivePath}"`,
       { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }
     );
     // bz l rows: "YYYY-MM-DD HH:MM:SS Attr Size CompSize Name"
@@ -158,7 +160,7 @@ async function getGameInfoFromArchive(rarFilePath, password) {
       for (const cmd of ['e', 'x']) {
         try {
           execSync(
-            `"${bz}" ${cmd} -y ${pwd} -o:"${tempDir}" "${rarFilePath}" "${target}"`.replace(/\s+/g, ' ').trim(),
+            `"${bz}" ${cmd} -y ${pwd} -o:"${tempDir}" "${rarFilePath}" "${target}"`,
             { stdio: 'ignore' }
           );
           if (findParamJson(tempDir)) {

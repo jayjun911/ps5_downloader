@@ -12,3 +12,5 @@ data/excluded.json
 data/excluded.json
 data/excluded.json
 data/progress.json
+flatten-audit-report.txt
+flatten-audit-console.log

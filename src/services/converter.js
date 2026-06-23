@@ -29,8 +29,9 @@ async function convertToFfpfsc(rarFilePath, outputFilePath, password) {
       .replace('-p ""', '');
   }
   
-  // Clean up any double spaces caused by removing arguments
-  cmdArgs = cmdArgs.replace(/\s+/g, ' ').trim();
+  // Tidy leading/trailing whitespace left by removing arguments. Do NOT collapse
+  // inner whitespace — quoted paths may legitimately contain consecutive spaces.
+  cmdArgs = cmdArgs.trim();
   
   const fullCommand = `"${binaryPath}" ${cmdArgs}`;
   logger.info(`Executing conversion: ${fullCommand}`);
