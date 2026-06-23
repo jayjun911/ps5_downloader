@@ -8,7 +8,8 @@ const logger = require('../utils/logger');
  *
  * Flow:
  *   1. Is the file a raw .exfat?       → exFAT pipeline (mount → validate → compress)
- *   2. Is it a compressed archive?
+ *   2. Is the file a .ffpkg?           → UFS2 pipeline (validate + read param.json → compress)
+ *   3. Is it a compressed archive?
  *        → contains .exfat inside?     → exFAT pipeline (extract → mount → validate → compress)
  *        → contains PS5 game files?    → standard pipeline (extract → compress)
  *   Title / PPSA / version come from param.json inside the content, not the filename.

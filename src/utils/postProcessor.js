@@ -274,6 +274,68 @@ async function processRawExfat({ filename, type, downloadDir, initialTitle, init
   }
 }
 
+/**
+ * Handles a .ffpkg file (PS5 UFS2 filesystem image):
+ *   - Validates the UFS2 structure and reads sce_sys/param.json directly
+ *     (read-only; Windows can't mount UFS2, so we parse on-disk structures)
+ *   - Renames .ffpkg to standard name using real metadata
+ *   - Compresses to .7z
+ *
+ * Throws (isFfpkgValidationError) when the image is structurally invalid.
+ * Returns { registeredFile, metadata }
+ */
+async function processFfpkg({ filename, type, downloadDir, initialTitle, initialPpsa, initialVer }) {
+  const currentPath = path.join(downloadDir, filename);
+  const { readFfpkgParam } = require('../services/ufs2Reader');
+
+  const spinner = ora(`[${type}] Validating .ffpkg "${filename}" (UFS2) and reading param.json...`).start();
+  let metadata = null;
+
+  const result = readFfpkgParam(currentPath);
+  metadata = result.metadata;
+  if (!result.valid) {
+    spinner.fail(`[${type}] .ffpkg validation failed: ${result.message}`);
+    const err = new Error(`.ffpkg validation failed: ${result.message}`);
+    err.isFfpkgValidationError = true;
+    throw err;
+  }
+  const metaStr = metadata
+    ? `${metadata.titleName} [${metadata.titleId}] ${metadata.version}`
+    : '(no param.json)';
+  spinner.succeed(`[${type}] Validated — ${metaStr}`);
+
+  // Compute final names
+  const realTitle = (metadata && metadata.titleName) || initialTitle;
+  const realPpsa  = (metadata && metadata.titleId)   || initialPpsa;
+  const realVer   = (metadata && metadata.version)   || initialVer;
+  const baseName  = `${sanitizeFileName(realTitle)} [${realPpsa}][${realVer}]`;
+
+  // Rename .ffpkg to standard name
+  const renamedPath = getUniqueFilePath(downloadDir, baseName, '.ffpkg', currentPath);
+  try {
+    if (path.resolve(currentPath) !== path.resolve(renamedPath)) {
+      fs.renameSync(currentPath, renamedPath);
+    }
+  } catch (e) {
+    logger.warn(`[${type}] Rename failed: ${e.message}`);
+  }
+
+  // Compress to .7z
+  const dest7zPath = path.join(downloadDir, `${baseName}.7z`);
+  const compressSpinner = ora(`[${type}] Compressing to ${baseName}.7z...`).start();
+  try {
+    await compressFileTo7z(renamedPath, dest7zPath);
+    if (!fs.existsSync(dest7zPath) || fs.statSync(dest7zPath).size === 0) {
+      throw new Error('Output 7z is empty');
+    }
+    compressSpinner.succeed(`[${type}] Compressed: ${baseName}.7z`);
+    return { registeredFile: { fileName: `${baseName}.7z`, type }, metadata };
+  } catch (compErr) {
+    compressSpinner.fail(`[${type}] Compression failed: ${compErr.message}. Keeping .ffpkg.`);
+    return { registeredFile: { fileName: path.basename(renamedPath), type }, metadata };
+  }
+}
+
 // ── Main post-processor ────────────────────────────────────────────────────────
 
 /**
@@ -422,8 +484,26 @@ async function processDownloadedFiles({
   // ── Process each file type group ──────────────────────────────────────────
   for (const [type, files] of Object.entries(fileGroups)) {
     const archives   = files.filter(isArchiveFile);
-    const extraFiles = files.filter(f => !isArchiveFile(f));
+    const ffpkgFiles = files.filter(f => f.toLowerCase().endsWith('.ffpkg'));
+    const extraFiles = files.filter(f => !isArchiveFile(f) && !f.toLowerCase().endsWith('.ffpkg'));
     const isGame     = type === 'GAME';
+
+    // ── .ffpkg (UFS2 image) GAME: dedicated pipeline ──────────────────────
+    if (isGame && ffpkgFiles.length > 0) {
+      for (const ff of ffpkgFiles) {
+        const { registeredFile, metadata } = await processFfpkg({
+          filename: ff, type, downloadDir,
+          initialTitle: finalTitle, initialPpsa: finalPpsa, initialVer: finalVer
+        });
+        if (metadata) {
+          if (metadata.titleId)   finalPpsa  = metadata.titleId;
+          if (metadata.titleName) finalTitle = metadata.titleName;
+          if (metadata.version)   finalVer   = metadata.version;
+        }
+        if (registeredFile) registeredFiles.push(registeredFile);
+      }
+      // fall through: any sibling archives/extras in this group still get processed
+    }
 
     // ── exFAT region GAME: dedicated pipeline ─────────────────────────────
     if (isGame && isExfatRegion) {

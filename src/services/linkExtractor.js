@@ -13,21 +13,28 @@ const REROUTE_DOMAIN = 'downloadgameps3.net';
  * USA (exFAT) -> USA -> KOR -> EUR -> other
  * But user specified: "KOR가 보이면 따로 무조건 high priority로 download"
  * Thus, KOR gets top priority (0), exFAT gets 1, USA gets 2, EUR gets 3, others get 4.
+ * Within each region the order is exFAT > .ffpkg > plain (ffpkg = exFAT tier + 0.5).
  */
 function getRegionPriority(regionName) {
   const region = regionName.toUpperCase();
   const isExfat = region.includes('EXFAT');
+  const isFfpkg = region.includes('FFPKG'); // e.g. "EUR (FFPKG)"
+
+  // Within a region prefer exFAT, then .ffpkg, then plain. ffpkg sits just below
+  // exFAT by scoring it at the exFAT tier + 0.5 (still ranked above plain).
+  const pick = (exfatVal, plainVal) =>
+    isExfat ? exfatVal : (isFfpkg ? exfatVal + 0.5 : plainVal);
 
   if (region.includes('KOR')) {
-    return isExfat ? 0 : 1;
+    return pick(0, 1);
   }
   if (region.includes('USA')) {
-    return isExfat ? 2 : 4;
+    return pick(2, 4);
   }
   if (region.includes('EUR') || region.includes('EURO')) {
-    return isExfat ? 3 : 5;
+    return pick(3, 5);
   }
-  return isExfat ? 6 : 7;
+  return pick(6, 7);
 }
 
 // Download host priority. Lower index represents higher priority.
