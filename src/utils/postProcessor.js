@@ -1,7 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const ora = require('ora');
-const { archiveContainsExfat, extractRarArchive, getGameInfoFromArchive, compressFolderTo7z, compressFileTo7z, findWorkingPassword, sanitizeFileName } = require('../services/unrarService');
+const { archiveContainsExfat, extractRarArchive, getGameInfoFromArchive, compressFolderTo7z, compressFileTo7z, findShallowestEbootDir, findWorkingPassword, sanitizeFileName } = require('../services/unrarService');
 const { addDownloadedGame } = require('../services/downloadedDb');
 const logger = require('./logger');
 
@@ -99,7 +99,7 @@ async function processExfatArchive({ archiveSet, type, downloadDir, password, in
   const tempFolder = path.join(downloadDir, path.basename(mainFileName, path.extname(mainFileName)));
   const extractSpinner = ora(`[${type}] Extracting exFAT archive${encrypted ? ' (encrypted)' : ''}...`).start();
   try {
-    await extractRarArchive(mainFilePath, tempFolder, workingPassword, { skipEbootFlatten: true });
+    await extractRarArchive(mainFilePath, tempFolder, workingPassword);
     if (!fs.existsSync(tempFolder) || fs.readdirSync(tempFolder).length === 0) {
       throw new Error('Extraction output is empty');
     }
@@ -384,7 +384,10 @@ async function processDownloadedFiles({
 
         const dest7zPath   = path.join(downloadDir, `${baseNameLabel}.7z`);
         const compressSpinner = ora(`[${groupType}] Recompressing to ${baseNameLabel}.7z...`).start();
-        await compressFolderTo7z(outputFolderPath, dest7zPath);
+        // Compress from the shallowest eboot.bin folder so wrapper folders are
+        // stripped from the archive. Read-only: nothing on disk is moved.
+        const compressRoot = findShallowestEbootDir(outputFolderPath) || outputFolderPath;
+        await compressFolderTo7z(compressRoot, dest7zPath);
         if (!fs.existsSync(dest7zPath) || fs.statSync(dest7zPath).size === 0) {
           throw new Error(`Recompressed 7z is empty: ${dest7zPath}`);
         }

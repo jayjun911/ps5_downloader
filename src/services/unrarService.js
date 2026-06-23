@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
-const logger = require('../utils/logger'); // used by flattenFolderToEboot
 
 const BIN_DIR = path.join(__dirname, '../../bin');
 const BZ_EXE_PATH = 'C:\\Program Files\\Bandizip\\bz.exe';
@@ -78,7 +77,7 @@ async function isArchiveEncrypted(filePath) {
 /**
  * Extracts any archive (RAR/ZIP/7z) to a destination directory using Bandizip.
  */
-async function extractRarArchive(rarFilePath, destFolder, password, { skipEbootFlatten = false } = {}) {
+async function extractRarArchive(rarFilePath, destFolder, password) {
   const bz = requireBz();
 
   if (!fs.existsSync(destFolder)) {
@@ -88,14 +87,6 @@ async function extractRarArchive(rarFilePath, destFolder, password, { skipEbootF
   const pwd = password ? `-p:${password}` : '';
   const cmd = `"${bz}" x -y ${pwd} -o:"${destFolder}" "${rarFilePath}"`.replace(/\s+/g, ' ').trim();
   execSync(cmd, { stdio: 'ignore' });
-
-  if (!skipEbootFlatten) {
-    try {
-      flattenFolderToEboot(destFolder);
-    } catch (err) {
-      logger.warn(`Failed to flatten folder structure to eboot.bin: ${err.message}`);
-    }
-  }
 }
 
 /**
@@ -257,63 +248,32 @@ async function findWorkingPassword(rarFilePath, passwordCandidates = []) {
   return '';
 }
 
-function findEbootDir(dir) {
-  if (!fs.existsSync(dir)) return null;
-  for (const file of fs.readdirSync(dir)) {
-    const fullPath = path.join(dir, file);
-    const stat = fs.statSync(fullPath);
-    if (stat.isDirectory()) {
-      const found = findEbootDir(fullPath);
-      if (found) return found;
-    } else if (file.toLowerCase() === 'eboot.bin') {
-      return dir;
+// Returns the shallowest directory under `root` that directly contains an
+// eboot.bin (case-insensitive), or null if none is found. Read-only — it never
+// moves, deletes, or otherwise touches the tree; it only reports a path. Handing
+// that path to the compressor strips meaningless wrapper folders above the game
+// while keeping everything at and below the game's top level intact (encrypted
+// files, the decrypted/ subfolder, etc.). Breadth-first so the topmost eboot
+// wins, never a deeper duplicate.
+function findShallowestEbootDir(root) {
+  if (!fs.existsSync(root)) return null;
+  const queue = [root];
+  while (queue.length > 0) {
+    const dir = queue.shift();
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+    catch (e) { continue; }
+    const subDirs = [];
+    for (const ent of entries) {
+      if (ent.isDirectory()) {
+        subDirs.push(path.join(dir, ent.name));
+      } else if (ent.name.toLowerCase() === 'eboot.bin') {
+        return dir; // shallowest match wins
+      }
     }
+    queue.push(...subDirs);
   }
   return null;
-}
-
-function flattenFolderToEboot(destFolder) {
-  // eboot.bin may sit several wrapper folders below destFolder, e.g.
-  // destFolder/Game/Game_v1.00/{sce_sys, eboot.bin}. findEbootDir gives us its
-  // exact location, so we resolve the whole path once and promote everything
-  // along it to destFolder in a single downward pass — no fixed retry count.
-  const ebootDir = findEbootDir(destFolder);
-  if (!ebootDir) {
-    logger.warn(`eboot.bin was not found in the extracted files of: ${destFolder}`);
-    return;
-  }
-  if (path.resolve(ebootDir) === path.resolve(destFolder)) {
-    return; // eboot.bin already at root, nothing to flatten
-  }
-
-  logger.info(`Promoting folder containing eboot.bin to root: ${ebootDir}`);
-
-  const parts = path.relative(destFolder, ebootDir).split(/[\\/]/);
-
-  // Rename the top wrapper aside first so promoting a same-named nested folder
-  // can't collide with the wrapper mid-move.
-  const tmpPath = path.join(destFolder, `__flatten_tmp_${Date.now()}`);
-  fs.renameSync(path.join(destFolder, parts[0]), tmpPath);
-
-  // Walk the chain down to ebootDir. At each level promote every item except
-  // the next container in the path, preserving sibling game-data folders.
-  let container = tmpPath;
-  for (let i = 0; i < parts.length; i++) {
-    const nextName = i + 1 < parts.length ? parts[i + 1] : null;
-    for (const item of fs.readdirSync(container)) {
-      if (item === nextName) continue; // descend into this one on the next pass
-      const dst = path.join(destFolder, item);
-      if (fs.existsSync(dst)) {
-        logger.warn(`Flatten: ${item} already exists at destination, skipping`);
-        continue;
-      }
-      fs.renameSync(path.join(container, item), dst);
-    }
-    if (nextName) container = path.join(container, nextName);
-  }
-
-  try { fs.rmSync(tmpPath, { recursive: true, force: true }); } catch (e) {}
-  logger.success(`Successfully flattened folder structure for: ${destFolder}`);
 }
 
 async function compressFolderTo7z(folderPath, dest7zPath) {
@@ -339,6 +299,7 @@ module.exports = {
   getGameInfoFromArchive,
   compressFolderTo7z,
   compressFileTo7z,
+  findShallowestEbootDir,
   findWorkingPassword,
   sanitizeFileName
 };
