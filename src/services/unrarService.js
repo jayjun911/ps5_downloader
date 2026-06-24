@@ -5,6 +5,13 @@ const { execSync } = require('child_process');
 const BIN_DIR = path.join(__dirname, '../../bin');
 const BZ_EXE_PATH = 'C:\\Program Files\\Bandizip\\bz.exe';
 
+// `bz l` prints one row per archived entry. Games with thousands of files (e.g.
+// per-animation assets) produce listings well over execSync's 1 MB default
+// maxBuffer; overflowing throws ENOBUFS, which the listing helpers catch and
+// silently treat as "listing failed", derailing param.json discovery. Give the
+// listing calls plenty of headroom.
+const LIST_MAXBUFFER = 256 * 1024 * 1024;
+
 function sanitizeFileName(name) {
   let cleanName = name
     .replace(/[®™©]/g, '')
@@ -53,7 +60,8 @@ function archiveContainsExfat(archivePath) {
   try {
     const output = execSync(`"${BZ_EXE_PATH}" l "${archivePath}"`, {
       encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'ignore']
+      stdio: ['pipe', 'pipe', 'ignore'],
+      maxBuffer: LIST_MAXBUFFER
     });
     return output.toLowerCase().includes('.exfat');
   } catch (e) {
@@ -107,7 +115,7 @@ function findParamPathInArchive(bz, archivePath, pwd) {
   try {
     const output = execSync(
       `"${bz}" l ${pwdFlag} "${archivePath}"`,
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }
+      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'], maxBuffer: LIST_MAXBUFFER }
     );
     // bz l rows: "YYYY-MM-DD HH:MM:SS Attr Size CompSize Name"
     // Size/CompSize are plain integers; the Name (which may contain spaces or
