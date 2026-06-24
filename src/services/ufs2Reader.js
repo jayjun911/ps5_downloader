@@ -1,4 +1,5 @@
 const fs = require('fs');
+const { deriveVersionFromParam } = require('../utils/versionParser');
 
 /*
  * Minimal read-only UFS2 reader — just enough to validate a .ffpkg image and
@@ -131,7 +132,7 @@ function extractMeta(json) {
   return {
     titleId: (json.titleId || '').trim(),
     titleName: (locale.titleName || '').trim(),
-    version: json.applicationVersion ? `v${json.applicationVersion}` : 'v01.00',
+    version: deriveVersionFromParam(json),
   };
 }
 

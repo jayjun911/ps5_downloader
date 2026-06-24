@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const { deriveVersionFromParam } = require('../utils/versionParser');
 
 const BIN_DIR = path.join(__dirname, '../../bin');
 const BZ_EXE_PATH = 'C:\\Program Files\\Bandizip\\bz.exe';
@@ -206,7 +207,7 @@ async function getGameInfoFromArchive(rarFilePath, password) {
     const param = JSON.parse(content);
 
     const titleId = param.titleId || 'Unknown';
-    const version = param.masterVersion || '1.00';
+    const version = deriveVersionFromParam(param);
 
     let titleName = '';
     if (param.localizedParameters) {
@@ -230,7 +231,7 @@ async function getGameInfoFromArchive(rarFilePath, password) {
     return {
       titleName: sanitizeFileName(titleName),
       titleId,
-      version: version.startsWith('v') ? version : `v${version}`,
+      version,
       encrypted: encryptedFlag,
       workingPassword
     };

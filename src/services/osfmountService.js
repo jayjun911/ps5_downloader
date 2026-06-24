@@ -2,6 +2,7 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const logger = require('../utils/logger');
+const { deriveVersionFromParam } = require('../utils/versionParser');
 
 function getOsfMountPath() {
   return process.env.OSFMOUNT_PATH || 'C:\\Program Files\\OSFMount\\OSFMount.exe';
@@ -47,7 +48,7 @@ function parseParamJson(driveLetter) {
     return {
       titleId: (json.titleId || '').trim(),
       titleName: (locale.titleName || '').trim(),
-      version: json.applicationVersion ? `v${json.applicationVersion}` : 'v01.00'
+      version: deriveVersionFromParam(json)
     };
   } catch (e) {
     return null;
