@@ -42,14 +42,21 @@ function getFilenameFromDisposition(disposition) {
  * @returns {Promise<{destPath: string, filename: string, size: number}>}
  */
 async function download1fichier(fileUrl, destDir, onProgress) {
-  const apiKey = process.env.FICHIER_API_KEY;
+  let apiKey = process.env.FICHIER_API_KEY;
   if (!apiKey) {
     throw new Error('FICHIER_API_KEY is not defined in environment variables.');
   }
+  apiKey = apiKey.replace(/^=/, '');
 
   // Ensure download dir exists
   if (!fs.existsSync(destDir)) {
     fs.mkdirSync(destDir, { recursive: true });
+  }
+
+  let cleanUrl = fileUrl;
+  const match = fileUrl.match(/^(https?:\/\/(?:[a-z0-9]+\.)?(?:1fichier\.com|1file\.com)\/(?:\?|#)?)([a-z0-9]{5,20})/i);
+  if (match) {
+    cleanUrl = `https://1fichier.com/?${match[2].toLowerCase()}`;
   }
 
   // ── Step 1: Request premium direct download URL ──
@@ -57,7 +64,7 @@ async function download1fichier(fileUrl, destDir, onProgress) {
   try {
     tokenRes = await axios.post(
       'https://api.1fichier.com/v1/download/get_token.cgi',
-      { url: fileUrl, single: 1 },
+      { url: cleanUrl, single: 1 },
       { 
         headers: { 
           'Authorization': `Bearer ${apiKey}`,

@@ -210,7 +210,7 @@ async function downloadSingleGame(game, options = {}) {
               );
               for (const r of fdmResults) {
                 const ui = bestLinks.urlInfo ? bestLinks.urlInfo.find(u => u.url === r.fileUrl) : null;
-                downloadedFiles.push({ filename: r.filename, type: ui ? ui.type : 'GAME' });
+                downloadedFiles.push({ filename: r.filename, type: ui ? ui.type : 'GAME', backportFw: ui ? ui.backportFw : null });
               }
             } catch (fdmErr) {
               fdmSpinner.fail(`[FDM] Download failed: ${fdmErr.message}`);
@@ -254,7 +254,7 @@ async function downloadSingleGame(game, options = {}) {
                   partSpinner.succeed(`Downloaded${typeLabel} part ${partIdx}: ${result.filename}`);
                 }
                 const type = info ? info.type : 'GAME';
-                downloadedFiles.push({ filename: result.filename, type });
+                downloadedFiles.push({ filename: result.filename, type, backportFw: info ? info.backportFw : null });
               } catch (downloadErr) {
                 partSpinner.fail(`Failed to download${typeLabel} part ${partIdx}: ${downloadErr.message}`);
                 logFailure(game.title, game.url, `Download${typeLabel} Part ${partIdx} failed: ${downloadErr.message}`);

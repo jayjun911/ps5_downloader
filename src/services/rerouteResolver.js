@@ -3,6 +3,17 @@ const cheerio = require('cheerio');
 const fs = require('fs');
 const path = require('path');
 
+function sanitizeFichierUrl(url) {
+  if (!url) return url;
+  if (/1fichier\.com|1file/i.test(url)) {
+    const match = url.match(/^(https?:\/\/(?:[a-z0-9]+\.)?(?:1fichier\.com|1file\.com)\/(?:\?|#)?)([a-z0-9]{5,20})/i);
+    if (match) {
+      return `https://1fichier.com/?${match[2].toLowerCase()}`;
+    }
+  }
+  return url;
+}
+
 // Regular expression to match allowed download host domains
 const DOWNLOAD_HOST_REGEX = /^https?:\/\/(?:www\.)?(?:1fichier\.com|datanodes\.to|mediafire\.com|rootz\.so|akirabox\.com|vikingfile\.com|mega\.nz|buzzheavier\.com)\//i;
 
@@ -144,7 +155,7 @@ To bypass this block, please follow these steps:
         const label = $(el).text().trim() || 'Link';
         if (url) {
           if (DOWNLOAD_HOST_REGEX.test(url)) {
-            linksMap.set(url, label);
+            linksMap.set(sanitizeFichierUrl(url), label);
           } else if (REROUTE_ARCHIVE_REGEX.test(url) && url !== rerouteUrl) {
             nestedReroutes.push(url);
           }
@@ -155,8 +166,9 @@ To bypass this block, please follow these steps:
       const textUrls = pageText.match(PLAIN_TEXT_URL_REGEX) || [];
       for (const url of textUrls) {
         const trimmedUrl = url.trim();
-        if (!linksMap.has(trimmedUrl)) {
-          linksMap.set(trimmedUrl, 'Text Link');
+        const cleanUrl = sanitizeFichierUrl(trimmedUrl);
+        if (!linksMap.has(cleanUrl)) {
+          linksMap.set(cleanUrl, 'Text Link');
         }
       }
 

@@ -2,6 +2,17 @@ const cheerio = require('cheerio');
 const { resolveReroute } = require('./rerouteResolver');
 const logger = require('../utils/logger');
 
+function sanitizeFichierUrl(url) {
+  if (!url) return url;
+  if (/1fichier\.com|1file/i.test(url)) {
+    const match = url.match(/^(https?:\/\/(?:[a-z0-9]+\.)?(?:1fichier\.com|1file\.com)\/(?:\?|#)?)([a-z0-9]{5,20})/i);
+    if (match) {
+      return `https://1fichier.com/?${match[2].toLowerCase()}`;
+    }
+  }
+  return url;
+}
+
 const EXCLUDED_DOMAINS = [
   'downloadgameps3.com',  // Guide/Tool links
 ];
@@ -82,11 +93,15 @@ function extractFirmwareRequirement(text) {
   m = lower.match(/works\s+on\s+(?:fw\s+)?(\d+)xx/);
   if (m) return parseInt(m[1], 10);
 
-  // "X.xx and higher / above / +"
-  m = lower.match(/(\d+)\.(?:xx|\d+)\s+(?:and|or)\s+(?:higher|above)/);
+  // "FW REQUIRED: X.xx" — backport sections state the target firmware this way
+  m = lower.match(/fw\s+required\s*:?\s*(\d+)\.(?:xx|\d+)/);
   if (m) return parseInt(m[1], 10);
 
-  m = lower.match(/(\d+)xx\s+(?:and|or)\s+(?:higher|above)/);
+  // "X.xx and higher / above / beyond / up / +"
+  m = lower.match(/(\d+)\.(?:xx|\d+)\s+(?:and|or)\s+(?:higher|above|beyond|up|newer|later)/);
+  if (m) return parseInt(m[1], 10);
+
+  m = lower.match(/(\d+)xx\s+(?:and|or)\s+(?:higher|above|beyond|up|newer|later)/);
   if (m) return parseInt(m[1], 10);
 
   // "Note: X.xx ..." where X.xx is followed by higher/above/+
@@ -94,6 +109,24 @@ function extractFirmwareRequirement(text) {
   if (m) return parseInt(m[1], 10);
 
   return null;
+}
+
+/**
+ * Extracts a backport's target firmware major version from a backport link block.
+ * Block labels are written as "Backport 4.xx", "Backport 4.xx+ (@BestPig)",
+ * "BackPort Ver 5.xx", etc. — the firmware sits right after the word. Returns the
+ * major version (e.g. 4) or null. Used only on BACKPORT-typed blocks, so the
+ * section's *main* firmware requirement is never mistaken for the backport's.
+ */
+function extractBackportVersion(text) {
+  const lower = (text || '').toLowerCase();
+  // Firmware immediately following "backport"/"back" (lazy, so the nearest number wins)
+  let m = lower.match(/back\s*port[^0-9]*?(\d{1,2})\.(?:xx|\d+)/);
+  if (m) return parseInt(m[1], 10);
+  m = lower.match(/back[^0-9]*?(\d{1,2})\.(?:xx|\d+)/);
+  if (m) return parseInt(m[1], 10);
+  // Fall back to a generic firmware note within the block ("FW REQUIRED: N.xx")
+  return extractFirmwareRequirement(text);
 }
 
 /**
@@ -186,7 +219,7 @@ function decodeAndExtractLinks(base64Payload) {
           if (type === 'BACKPORT' && firmwareRequirement === null && shouldDropBackport('', trimmedUrl, '')) {
             continue;
           }
-          groups.push({ type, links: [{ label: 'Link', url: trimmedUrl }] });
+          groups.push({ type, links: [{ label: 'Link', url: sanitizeFichierUrl(trimmedUrl) }] });
         }
       }
 
@@ -232,17 +265,24 @@ function decodeAndExtractLinks(base64Payload) {
       }
 
       if (url && !EXCLUDED_DOMAINS.some(domain => url.includes(domain))) {
-        blockLinks.push({ label, url });
+        blockLinks.push({ label, url: sanitizeFichierUrl(url) });
       }
     });
 
     if (blockLinks.length > 0) {
-      const type = detectTypeFromText(blockText || $(blockEl).text());
+      const blockFullText = blockText || $(blockEl).text();
+      const type = detectTypeFromText(blockFullText);
       // BACKPORT URL filtering: only apply old heuristic when section has no firmware note
-      if (type === 'BACKPORT' && firmwareRequirement === null && shouldDropBackport(blockText || $(blockEl).text())) {
+      if (type === 'BACKPORT' && firmwareRequirement === null && shouldDropBackport(blockFullText)) {
         return;
       }
-      groups.push({ type, links: blockLinks });
+      const group = { type, links: blockLinks };
+      // Tag backport groups with their own target firmware (parsed from this block,
+      // not the section) so post-processing can name the file [BACK4XX] etc.
+      if (type === 'BACKPORT' || type === 'BACK') {
+        group.backportFw = extractBackportVersion(blockFullText);
+      }
+      groups.push(group);
     }
   });
 
@@ -269,7 +309,7 @@ function decodeAndExtractLinks(base64Payload) {
       }
 
       if (url && !EXCLUDED_DOMAINS.some(domain => url.includes(domain))) {
-        flatLinks.push({ label, url });
+        flatLinks.push({ label, url: sanitizeFichierUrl(url) });
       }
     });
 
@@ -397,7 +437,7 @@ async function getBestDownloadLinks(sections, targetPPSA, { skipHosts = [], forc
             for (const url of bestUrls) {
               if (!finalUrls.includes(url)) {
                 finalUrls.push(url);
-                finalUrlInfos.push({ url, type: group.type });
+                finalUrlInfos.push({ url, type: group.type, backportFw: group.backportFw != null ? group.backportFw : null });
                 selectedHostNames.add(getHostNameFromUrl(url));
               }
             }
@@ -477,7 +517,7 @@ async function getBestDownloadLinks(sections, targetPPSA, { skipHosts = [], forc
               for (const url of groupedByHost[sortedKeys[0]]) {
                 if (!finalUrls.includes(url)) {
                   finalUrls.push(url);
-                  finalUrlInfos.push({ url, type: group.type });
+                  finalUrlInfos.push({ url, type: group.type, backportFw: group.backportFw != null ? group.backportFw : null });
                   selectedHostNames.add(getHostNameFromUrl(url));
                 }
               }

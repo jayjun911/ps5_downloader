@@ -7,6 +7,14 @@ const logger = require('./logger');
 
 // ── File-type helpers ──────────────────────────────────────────────────────────
 
+// Builds the filename type tag. Backports are tagged with their target firmware
+// (e.g. [BACK4XX] for a 4.xx backport) when that version is known; otherwise the
+// generic [BACKPORT] is used. All other types use their name verbatim.
+function buildTypeTag(type, backportFw) {
+  if (type === 'BACKPORT' && backportFw != null) return `BACK${backportFw}XX`;
+  return type;
+}
+
 function isArchiveFile(file) {
   const lower = file.toLowerCase();
   return lower.endsWith('.rar') || lower.endsWith('.zip') || lower.endsWith('.7z') ||
@@ -365,12 +373,16 @@ async function processDownloadedFiles({
 
   // Group files by type
   const fileGroups = {};
+  // Backport firmware version per type group (e.g. 4 → tagged [BACK4XX]). All
+  // files of a backport group share the same target firmware.
+  const groupBackportFw = {};
   for (const fileItem of downloadedFiles) {
     const type = fileItem.type || 'GAME';
     const filePath = path.join(downloadDir, fileItem.filename);
     if (!fs.existsSync(filePath)) continue;
     if (!fileGroups[type]) fileGroups[type] = [];
     fileGroups[type].push(fileItem.filename);
+    if (fileItem.backportFw != null) groupBackportFw[type] = fileItem.backportFw;
   }
 
   // Auto-detect exFAT: if a GAME archive contains a .exfat file inside, treat as exFAT region
@@ -540,7 +552,7 @@ async function processDownloadedFiles({
     // ── Standard processing ───────────────────────────────────────────────
     const baseName = isGame
       ? `${sanitizeFileName(finalTitle)} [${finalPpsa}][${finalVer}]`
-      : `${sanitizeFileName(finalTitle)} [${finalPpsa}][${type}]`;
+      : `${sanitizeFileName(finalTitle)} [${finalPpsa}][${buildTypeTag(type, groupBackportFw[type])}]`;
 
     if (archives.length > 0) {
       if (checkIsSplitArchive(archives) || isGame) {
