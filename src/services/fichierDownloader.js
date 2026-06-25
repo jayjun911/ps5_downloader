@@ -42,11 +42,10 @@ function getFilenameFromDisposition(disposition) {
  * @returns {Promise<{destPath: string, filename: string, size: number}>}
  */
 async function download1fichier(fileUrl, destDir, onProgress) {
-  let apiKey = process.env.FICHIER_API_KEY;
+  const apiKey = process.env.FICHIER_API_KEY;
   if (!apiKey) {
     throw new Error('FICHIER_API_KEY is not defined in environment variables.');
   }
-  apiKey = apiKey.replace(/^=/, '');
 
   // Ensure download dir exists
   if (!fs.existsSync(destDir)) {
