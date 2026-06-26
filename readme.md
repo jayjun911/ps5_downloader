@@ -210,7 +210,7 @@ For each section, the tool checks the content for `"Works on X.xx and higher"` n
 5. **Download**:
    - *Built-in*: Streams directly via 1fichier API or Datanodes multi-step flow.
    - *FDM mode* (`DOWNLOAD_MANAGER` set): For each file, resolves the direct URL immediately before queuing in FDM (prevents token expiry). Polls via `.fdmdownload` temp file disappearance. Up to `DOWNLOADER_SIMUL_DOWN_LIMIT` files download simultaneously per game; all must complete before post-processing begins.
-6. **exFAT failure handling**: If an exFAT section download fails, any partial `.exfat` file is renamed to `.failed` and the game is skipped entirely (no fallback to other sections).
+6. **exFAT-exclusive by default**: If a game has any exFAT section, only exFAT sections are tried — the tool never falls back to a non-exFAT version. Pass `--fallback` to allow non-exFAT sections. If an exFAT section download fails, any partial `.exfat` file is renamed to `.failed` and the game is skipped.
 
 ### Post-processing Flow
 
@@ -461,7 +461,7 @@ ps5dl open "After The Fall"
 5. **다운로드**:
    - *내장 모드*: 1fichier API 스트리밍 또는 Datanodes 다단계 흐름
    - *FDM 모드* (`DOWNLOAD_MANAGER` 설정 시): 파일별로 URL resolve 직후 FDM에 큐잉 (토큰 만료 방지). `.fdmdownload` 임시 파일 소멸로 완료 감지. `DOWNLOADER_SIMUL_DOWN_LIMIT`개까지 동시 다운로드. **전체 완료 후** 후처리 시작.
-6. **exFAT 실패 처리**: exFAT 섹션 다운로드 실패 시 `.exfat` → `.failed` 리네임 후 해당 게임 skip (다른 섹션 시도 없음)
+6. **기본 exFAT 전용**: 게임에 exFAT 섹션이 하나라도 있으면 exFAT 섹션만 시도하며 non-exFAT 버전으로 폴백하지 않음. `--fallback` 지정 시 non-exFAT 섹션도 폴백 허용. exFAT 다운로드 실패 시 `.exfat` → `.failed` 리네임 후 해당 게임 skip
 
 ### 후처리 흐름
 

@@ -123,15 +123,16 @@ async function downloadSingleGame(game, options = {}) {
         return getRegionPriority(a.region) - getRegionPriority(b.region);
       });
 
-      // --exfat: if any section is exFAT, restrict to exFAT-only sections
-      if (options.exfat) {
+      // exFAT-exclusive by default: if any exFAT section exists, restrict to
+      // exFAT sections only and never fall back to non-exFAT versions. Pass
+      // --fallback to allow non-exFAT sections as a fallback.
+      if (!options.fallback) {
         const exfatSections = sections.filter(s => /exfat/i.test(s.region));
-        if (exfatSections.length > 0) {
+        if (exfatSections.length > 0 && exfatSections.length !== sections.length) {
+          const droppedCount = sections.length - exfatSections.length;
           sections.length = 0;
           exfatSections.forEach(s => sections.push(s));
-          logger.info(`--exfat: restricting to ${sections.length} exFAT section(s)`);
-        } else {
-          logger.warn(`--exfat: no exFAT sections found, proceeding with all sections`);
+          logger.info(`Restricting to ${sections.length} exFAT section(s), skipping ${droppedCount} non-exFAT (use --fallback to allow them).`);
         }
       }
     }

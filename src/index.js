@@ -33,7 +33,7 @@ program
   .option('-c, --completed', 'Mark the game as completed/downloaded without downloading it')
   .option('-p, --password <string>', 'Override archive password (used when auto-detection fails)')
   .option('-o, --out <path>', 'Override the default download directory')
-  .option('-e, --exfat', 'If an exFAT section exists, use it exclusively (no fallback to non-exFAT)')
+  .option('-f, --fallback', 'Allow non-exFAT sections as a fallback when an exFAT section exists (default: exFAT-exclusive)')
   .description('Download a specific game or a batch of games from TBD list')
   .action((title, options) => {
     downloadCommand(title, options);
