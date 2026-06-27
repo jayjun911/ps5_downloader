@@ -9,7 +9,7 @@ const excludeCommand = require('./commands/exclude');
 const completedCommand = require('./commands/completed');
 
 program
-  .name('ps5dl')
+  .name('dlps')
   .description('PS5 Downloader CLI Tool')
   .version('1.0.0');
 

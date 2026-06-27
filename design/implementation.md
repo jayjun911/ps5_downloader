@@ -1,4 +1,4 @@
-# PS5 Downloader CLI (`ps5dl`) — 구현 문서
+# PS5 Downloader CLI (`dlps`) — 구현 문서
 
 > `implementation_plan.md`와 통합된 단일 권위 문서입니다.
 
@@ -6,7 +6,7 @@
 
 ## 개요
 
-**`ps5dl`** — Node.js 기반 CLI 툴. 로컬 LaunchBox XML(`PS5.xml`)과 `dlpsgame.com` 웹 목록을 비교하여 아직 다운로드하지 않은 PS5 게임을 추적하고, 자동으로 다운로드 링크를 추출하여 실행하는 도구.
+**`dlps`** — Node.js 기반 CLI 툴. 로컬 LaunchBox XML(`PS5.xml`)과 `dlpsgame.com` 웹 목록을 비교하여 아직 다운로드하지 않은 PS5 게임을 추적하고, 자동으로 다운로드 링크를 추출하여 실행하는 도구.
 
 다운로드 완료 후:
 - `sce_sys/param.json`을 내부 추출하여 실제 타이틀명·PPSA·버전 메타데이터를 획득

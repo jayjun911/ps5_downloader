@@ -1,6 +1,6 @@
-# PS5 Downloader CLI (`ps5dl`)
+# PS5 Downloader CLI (`dlps`)
 
-`ps5dl`은 Node.js 기반 CLI 도구로, `dlpsgame.com`에서 PS5 게임을 자동으로 다운로드하고, 암호화 여부 판별 및 후처리(평탄화, Bandizip 7z 재압축, 표준 파일명 리네임)를 수행하며, LaunchBox XML(`PS5.xml`)과 동기화하여 미보유 게임을 추적합니다.
+`dlps`은 Node.js 기반 CLI 도구로, `dlpsgame.com`에서 PS5 게임을 자동으로 다운로드하고, 암호화 여부 판별 및 후처리(평탄화, Bandizip 7z 재압축, 표준 파일명 리네임)를 수행하며, LaunchBox XML(`PS5.xml`)과 동기화하여 미보유 게임을 추적합니다.
 
 ---
 
@@ -85,13 +85,13 @@ npm install
 npm link
 ```
 
-After linking, use the `ps5dl` command from anywhere.
+After linking, use the `dlps` command from anywhere.
 
 ---
 
 ## 4. Command Reference
 
-### `ps5dl list [source]`
+### `dlps list [source]`
 List games from different sources. Supports `--name`/`-n` and `--limit`/`-l` filters.
 
 | Source | Description |
@@ -104,85 +104,85 @@ List games from different sources. Supports `--name`/`-n` and `--limit`/`-l` fil
 | `excluded` | Games excluded from batch downloads |
 
 ```bash
-ps5dl list tbd
-ps5dl list tbd -l 10 -n "Spider-Man"
+dlps list tbd
+dlps list tbd -l 10 -n "Spider-Man"
 ```
 
 ---
 
-### `ps5dl download [title]`
+### `dlps download [title]`
 Download a single game or a batch from the TBD list.
 
 ```bash
 # Single game
-ps5dl download "Aeterna Noctis"
+dlps download "Aeterna Noctis"
 
 # Batch download (first 5 TBD games)
-ps5dl download --limit 5
+dlps download --limit 5
 
 # Override download directory
-ps5dl download "Aeterna Noctis" --out "D:\CustomDownloads"
+dlps download "Aeterna Noctis" --out "D:\CustomDownloads"
 
 # Download only a specific file type (GAME, DLC, UPDATE, BACKPORT, UNLOCK)
-ps5dl download "EA SPORTS FC 26" --type DLC
+dlps download "EA SPORTS FC 26" --type DLC
 
 # Override archive password
-ps5dl download "Game Title" --password "custom_password"
+dlps download "Game Title" --password "custom_password"
 
 # Mark as completed without downloading
-ps5dl download "Game Title" --completed
+dlps download "Game Title" --completed
 ```
 
 **Batch + FDM mode:** When `DOWNLOAD_MANAGER` is set, `--limit` runs `DOWNLOADER_PARALLEL_GAME_PARSING` games concurrently using a rolling window — as soon as one game finishes, the next starts immediately.
 
 ---
 
-### `ps5dl urldown <url>`
+### `dlps urldown <url>`
 Download directly from a 1fichier, Datanodes, or Vikingfile URL and run the full post-processing pipeline.
 
 ```bash
-ps5dl urldown "https://1fichier.com/?abc123"
-ps5dl urldown "https://datanodes.to/abc123" --password "DLPSGAME.COM"
+dlps urldown "https://1fichier.com/?abc123"
+dlps urldown "https://datanodes.to/abc123" --password "DLPSGAME.COM"
 ```
 
 ---
 
-### `ps5dl completed [title]`
+### `dlps completed [title]`
 Manually manage the completed games database.
 
 ```bash
-ps5dl completed                          # List all completed
-ps5dl completed "Game Title"             # Mark as completed
-ps5dl completed "Game Title" --remove    # Remove from completed
+dlps completed                          # List all completed
+dlps completed "Game Title"             # Mark as completed
+dlps completed "Game Title" --remove    # Remove from completed
 ```
 
 ---
 
-### `ps5dl exclude [title]`
+### `dlps exclude [title]`
 Exclude games from batch downloads.
 
 ```bash
-ps5dl exclude                            # List all excluded
-ps5dl exclude "Game Title"               # Add to exclusion list
-ps5dl exclude "Game Title" --remove      # Remove from exclusion list
+dlps exclude                            # List all excluded
+dlps exclude "Game Title"               # Add to exclusion list
+dlps exclude "Game Title" --remove      # Remove from exclusion list
 ```
 
 ---
 
-### `ps5dl dupe [query]`
+### `dlps dupe [query]`
 Find and mark web games as duplicates of local/completed games.
 
 ```bash
-ps5dl dupe "Endling"
+dlps dupe "Endling"
 ```
 
 ---
 
-### `ps5dl open <title>`
+### `dlps open <title>`
 Open the game's download page in your default browser.
 
 ```bash
-ps5dl open "After The Fall"
+dlps open "After The Fall"
 ```
 
 ---
@@ -336,13 +336,13 @@ npm install
 npm link
 ```
 
-링크 완료 후 어디서나 `ps5dl` 명령어를 사용할 수 있습니다.
+링크 완료 후 어디서나 `dlps` 명령어를 사용할 수 있습니다.
 
 ---
 
 ## 4. 명령어 사용법
 
-### `ps5dl list [source]`
+### `dlps list [source]`
 다양한 소스별 게임 목록을 조회합니다. `--name`/`-n`, `--limit`/`-l` 필터 지원.
 
 | Source | 설명 |
@@ -355,85 +355,85 @@ npm link
 | `excluded` | 배치 다운로드 제외 목록 |
 
 ```bash
-ps5dl list tbd
-ps5dl list tbd -l 10 -n "Spider-Man"
+dlps list tbd
+dlps list tbd -l 10 -n "Spider-Man"
 ```
 
 ---
 
-### `ps5dl download [title]`
+### `dlps download [title]`
 단건 또는 배치로 게임을 다운로드합니다.
 
 ```bash
 # 단건 다운로드
-ps5dl download "Aeterna Noctis"
+dlps download "Aeterna Noctis"
 
 # 배치 다운로드 (TBD 상위 5개)
-ps5dl download --limit 5
+dlps download --limit 5
 
 # 저장 경로 재정의
-ps5dl download "Aeterna Noctis" --out "D:\CustomDownloads"
+dlps download "Aeterna Noctis" --out "D:\CustomDownloads"
 
 # 특정 파일 타입만 다운로드 (GAME, DLC, UPDATE, BACKPORT, UNLOCK)
-ps5dl download "EA SPORTS FC 26" --type DLC
+dlps download "EA SPORTS FC 26" --type DLC
 
 # 아카이브 비밀번호 수동 지정
-ps5dl download "Game Title" --password "custom_password"
+dlps download "Game Title" --password "custom_password"
 
 # 실제 다운로드 없이 완료로 등록
-ps5dl download "Game Title" --completed
+dlps download "Game Title" --completed
 ```
 
 **배치 + FDM 모드:** `DOWNLOAD_MANAGER` 설정 시 `--limit`는 `DOWNLOADER_PARALLEL_GAME_PARSING`개 게임을 동시에 rolling window 방식으로 처리합니다. 한 게임이 완료되면 즉시 다음 게임이 시작됩니다.
 
 ---
 
-### `ps5dl urldown <url>`
+### `dlps urldown <url>`
 1fichier·Datanodes·Vikingfile URL에서 직접 다운로드 후 후처리 파이프라인을 실행합니다.
 
 ```bash
-ps5dl urldown "https://1fichier.com/?abc123"
-ps5dl urldown "https://datanodes.to/abc123" --password "DLPSGAME.COM"
+dlps urldown "https://1fichier.com/?abc123"
+dlps urldown "https://datanodes.to/abc123" --password "DLPSGAME.COM"
 ```
 
 ---
 
-### `ps5dl completed [title]`
+### `dlps completed [title]`
 완료 목록을 수동으로 관리합니다.
 
 ```bash
-ps5dl completed                          # 완료 목록 조회
-ps5dl completed "Game Title"             # 완료로 등록
-ps5dl completed "Game Title" --remove    # 완료 목록에서 제거
+dlps completed                          # 완료 목록 조회
+dlps completed "Game Title"             # 완료로 등록
+dlps completed "Game Title" --remove    # 완료 목록에서 제거
 ```
 
 ---
 
-### `ps5dl exclude [title]`
+### `dlps exclude [title]`
 배치 다운로드 제외 목록을 관리합니다.
 
 ```bash
-ps5dl exclude                            # 제외 목록 조회
-ps5dl exclude "Game Title"               # 제외 등록
-ps5dl exclude "Game Title" --remove      # 제외 해제
+dlps exclude                            # 제외 목록 조회
+dlps exclude "Game Title"               # 제외 등록
+dlps exclude "Game Title" --remove      # 제외 해제
 ```
 
 ---
 
-### `ps5dl dupe [query]`
+### `dlps dupe [query]`
 로컬·완료 목록에 있는 게임의 중복 웹 타이틀을 찾아 완료로 표시합니다.
 
 ```bash
-ps5dl dupe "Endling"
+dlps dupe "Endling"
 ```
 
 ---
 
-### `ps5dl open <title>`
+### `dlps open <title>`
 매칭되는 게임의 웹 다운로드 페이지를 기본 브라우저로 엽니다.
 
 ```bash
-ps5dl open "After The Fall"
+dlps open "After The Fall"
 ```
 
 ---

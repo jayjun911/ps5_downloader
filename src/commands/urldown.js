@@ -16,7 +16,7 @@ function detectService(url) {
 
 async function urldownCommand(url, options = {}) {
   if (!url) {
-    logger.error('Usage: ps5dl urldown <url>');
+    logger.error('Usage: dlps urldown <url>');
     logger.info('Supported: 1fichier.com, datanodes.to, vikingfile.com');
     return;
   }

@@ -1,10 +1,10 @@
 {
-  "name": "ps5dl",
+  "name": "dlps",
   "version": "1.0.0",
   "description": "PS5 Downloader CLI Tool",
   "main": "src/index.js",
   "bin": {
-    "ps5dl": "./src/index.js"
+    "dlps": "./src/index.js"
   },
   "scripts": {
     "start": "node src/index.js"

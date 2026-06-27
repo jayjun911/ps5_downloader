@@ -504,7 +504,7 @@ async function downloadCommand(titleQuery, options = {}) {
 
     if (options.completed) {
       if (!titleQuery) {
-        logger.error('Please specify a game title to mark as completed. Example: ps5dl download "3D MiniGolf" --completed');
+        logger.error('Please specify a game title to mark as completed. Example: dlps download "3D MiniGolf" --completed');
         return;
       }
       const completedCommand = require('./completed');
@@ -513,7 +513,7 @@ async function downloadCommand(titleQuery, options = {}) {
     }
 
     if (!titleQuery) {
-      logger.error('Please specify a game title to download. Example: ps5dl download "3D MiniGolf"');
+      logger.error('Please specify a game title to download. Example: dlps download "3D MiniGolf"');
       return;
     }
 

@@ -6,7 +6,7 @@ const { extractVersion } = require('../utils/versionParser');
 const logger = require('../utils/logger');
 
 /**
- * ps5dl process <filepath> [--password <pw>]
+ * dlps process <filepath> [--password <pw>]
  *
  * Flow:
  *   1. Is the file a raw .exfat?       → exFAT pipeline (mount → validate → compress)

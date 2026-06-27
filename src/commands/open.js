@@ -11,7 +11,7 @@ const chalk = require('chalk');
  */
 async function openCommand(titleQuery) {
   if (!titleQuery) {
-    logger.error('Please specify a game title. Example: ps5dl open "Cyberpunk 2077"');
+    logger.error('Please specify a game title. Example: dlps open "Cyberpunk 2077"');
     return;
   }
 
