@@ -35,7 +35,32 @@ function deriveVersionFromParam(json) {
   return `v${parts.join('.')}`;
 }
 
+/**
+ * Picks the title for filenames from a parsed param.json's localizedParameters.
+ *
+ * Prefers the English (en-US, then any en-*) title because it's the most
+ * universally readable/searchable for filenames — many games set
+ * defaultLanguage to a CJK locale (e.g. zh-Hant "暗徒誓約") while also shipping an
+ * en-US title ("VARLET"). Falls back to the param's defaultLanguage, then any
+ * locale that carries a title.
+ *
+ * @param {object} json parsed param.json
+ * @returns {string} the chosen titleName, or '' if none present
+ */
+function deriveTitleNameFromParam(json) {
+  const loc = (json && json.localizedParameters) || {};
+  const enKey = loc['en-US']
+    ? 'en-US'
+    : Object.keys(loc).find((k) => /^en-/i.test(k) && loc[k] && loc[k].titleName);
+  const pick = (enKey && loc[enKey])
+    || loc[loc.defaultLanguage]
+    || Object.values(loc).find((v) => v && v.titleName)
+    || {};
+  return (pick.titleName || '').trim();
+}
+
 module.exports = {
   extractVersion,
+  deriveTitleNameFromParam,
   deriveVersionFromParam
 };

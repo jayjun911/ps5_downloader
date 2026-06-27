@@ -1,5 +1,5 @@
 const fs = require('fs');
-const { deriveVersionFromParam } = require('../utils/versionParser');
+const { deriveVersionFromParam, deriveTitleNameFromParam } = require('../utils/versionParser');
 
 /*
  * Minimal read-only UFS2 reader — just enough to validate a .ffpkg image and
@@ -128,12 +128,9 @@ function lookup(fd, s, dirIno, name) {
 }
 
 function extractMeta(json) {
-  const loc = json.localizedParameters || {};
-  const defLang = loc.defaultLanguage || 'en-US';
-  const locale = loc[defLang] || loc['en-US'] || Object.values(loc).find((v) => v && v.titleName) || {};
   return {
     titleId: (json.titleId || '').trim(),
-    titleName: (locale.titleName || '').trim(),
+    titleName: deriveTitleNameFromParam(json),
     version: deriveVersionFromParam(json),
   };
 }

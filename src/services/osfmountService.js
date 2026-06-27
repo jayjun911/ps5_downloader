@@ -2,7 +2,7 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const logger = require('../utils/logger');
-const { deriveVersionFromParam } = require('../utils/versionParser');
+const { deriveVersionFromParam, deriveTitleNameFromParam } = require('../utils/versionParser');
 
 function getOsfMountPath() {
   return process.env.OSFMOUNT_PATH || 'C:\\Program Files\\OSFMount\\OSFMount.exe';
@@ -40,14 +40,9 @@ function parseParamJson(driveLetter) {
     const raw = fs.readFileSync(paramPath, 'utf-8');
     const json = JSON.parse(raw);
 
-    const defLang = (json.localizedParameters && json.localizedParameters.defaultLanguage) || 'en-US';
-    // Try defaultLanguage first, then en-US, then any available locale
-    const locParams = json.localizedParameters || {};
-    const locale = locParams[defLang] || locParams['en-US'] || Object.values(locParams).find(v => v && v.titleName) || {};
-
     return {
       titleId: (json.titleId || '').trim(),
-      titleName: (locale.titleName || '').trim(),
+      titleName: deriveTitleNameFromParam(json),
       version: deriveVersionFromParam(json)
     };
   } catch (e) {

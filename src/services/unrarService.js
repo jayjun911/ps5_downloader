@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
-const { deriveVersionFromParam } = require('../utils/versionParser');
+const { deriveVersionFromParam, deriveTitleNameFromParam } = require('../utils/versionParser');
 
 const BIN_DIR = path.join(__dirname, '../../bin');
 const BZ_EXE_PATH = 'C:\\Program Files\\Bandizip\\bz.exe';
@@ -209,21 +209,7 @@ async function getGameInfoFromArchive(rarFilePath, password) {
     const titleId = param.titleId || 'Unknown';
     const version = deriveVersionFromParam(param);
 
-    let titleName = '';
-    if (param.localizedParameters) {
-      const defaultLang = param.localizedParameters.defaultLanguage || 'en-US';
-      if (param.localizedParameters[defaultLang]) {
-        titleName = param.localizedParameters[defaultLang].titleName;
-      }
-      if (!titleName) {
-        for (const key of Object.keys(param.localizedParameters)) {
-          if (param.localizedParameters[key] && param.localizedParameters[key].titleName) {
-            titleName = param.localizedParameters[key].titleName;
-            break;
-          }
-        }
-      }
-    }
+    let titleName = deriveTitleNameFromParam(param);
     if (!titleName) titleName = 'Unknown';
 
     try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (e) {}
