@@ -3,15 +3,16 @@ const path = require('path');
 const { XMLParser } = require('fast-xml-parser');
 const { extractPPSA } = require('../utils/ppsaParser');
 const { normalizeTitle } = require('../utils/titleNormalizer');
-
-const XML_PATH = path.join(__dirname, '../../data/PS5.xml');
+const { getCurrentPlatform } = require('./platformConfig');
 
 /**
- * Loads and parses the local PS5 LaunchBox XML library.
- * 
+ * Loads and parses the local LaunchBox XML library for the selected platform.
+ *
  * @returns {Array<{title: string, fileName: string, ppsa: string|null, lbId: string, order: number, normalizedTitle: string}>}
  */
 function loadLocalLibrary() {
+  const XML_PATH = path.join(__dirname, '../../data', getCurrentPlatform().xmlFile);
+
   if (!fs.existsSync(XML_PATH)) {
     throw new Error(`Local library file not found at ${XML_PATH}`);
   }

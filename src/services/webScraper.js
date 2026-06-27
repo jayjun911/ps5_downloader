@@ -3,10 +3,15 @@ const path = require('path');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { normalizeTitle } = require('../utils/titleNormalizer');
+const { getCurrentPlatform, getCurrentPlatformKey } = require('./platformConfig');
 
 const CACHE_DIR = path.join(__dirname, '../../data/cache');
-const WEB_LIST_CACHE = path.join(CACHE_DIR, 'web-list.json');
 const SUBPAGE_CACHE_DIR = path.join(CACHE_DIR, 'subpages');
+
+// Web list cache is kept per-platform so switching platforms never mixes lists.
+function getWebListCachePath() {
+  return path.join(CACHE_DIR, `web-list-${getCurrentPlatformKey()}.json`);
+}
 
 // Default cache TTL is 24 hours
 const CACHE_TTL_MS = (parseInt(process.env.CACHE_TTL_HOURS, 10) || 24) * 60 * 60 * 1000;
@@ -61,6 +66,8 @@ async function fetchHtml(url) {
 const logger = require('../utils/logger');
 
 async function getWebGameList(forceRefresh = false) {
+  const platform = getCurrentPlatform();
+  const WEB_LIST_CACHE = getWebListCachePath();
   const manualListPath = path.join(CACHE_DIR, 'manual-list.html');
   if (fs.existsSync(manualListPath)) {
     try {
@@ -118,7 +125,7 @@ async function getWebGameList(forceRefresh = false) {
 
   // Try WordPress REST API first — bypasses Cloudflare
   try {
-    const apiRes = await axios.get('https://dlpsgame.com/wp-json/wp/v2/pages?slug=list-game-ps5', {
+    const apiRes = await axios.get(`${platform.host}/wp-json/wp/v2/pages?slug=${platform.slug}`, {
       headers: { 'User-Agent': USER_AGENT },
       timeout: 15000
     });
@@ -132,8 +139,8 @@ async function getWebGameList(forceRefresh = false) {
   // Direct fetch fallback
   if (!html) {
     const url = forceRefresh
-      ? `https://dlpsgame.com/list-game-ps5/?_t=${Date.now()}`
-      : 'https://dlpsgame.com/list-game-ps5/';
+      ? `${platform.host}/${platform.slug}/?_t=${Date.now()}`
+      : `${platform.host}/${platform.slug}/`;
     try {
       html = await fetchHtml(url);
       if (html && (html.includes('Just a moment...') || html.includes('challenges.cloudflare.com'))) {
@@ -290,7 +297,7 @@ async function getGameSubpageData(slug, url, forceRefresh = false) {
     // 2. Try WordPress REST API (turnstile-free)
     try {
       logger.info(`Attempting WordPress REST API lookup for "${slug}"...`);
-      const apiRes = await axios.get(`https://dlpsgame.com/wp-json/wp/v2/posts?slug=${slug}`, {
+      const apiRes = await axios.get(`${getCurrentPlatform().host}/wp-json/wp/v2/posts?slug=${slug}`, {
         headers: { 'User-Agent': USER_AGENT }
       });
       if (apiRes.data && Array.isArray(apiRes.data) && apiRes.data.length > 0 && apiRes.data[0].content && apiRes.data[0].content.rendered) {

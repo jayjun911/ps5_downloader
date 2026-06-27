@@ -85,6 +85,15 @@ program
   });
 
 program
+  .command('set-platform')
+  .argument('[platform]', 'Console platform to set as default (ps5, ps4, ps3, ps2, switch, wii, wiiu, 3ds, xbox-jtag, xbox-iso, psp, psvita, pc)')
+  .description('Set or show the default game console platform')
+  .action((platform) => {
+    const setPlatformCommand = require('./commands/set-platform');
+    setPlatformCommand(platform);
+  });
+
+program
   .command('urldown')
   .argument('<url>', '1fichier.com, datanodes.to, or vikingfile.com file URL')
   .option('-p, --password <string>', 'Archive password (if auto-detection fails)')
