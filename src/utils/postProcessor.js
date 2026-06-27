@@ -301,16 +301,24 @@ async function processFfpkg({ filename, type, downloadDir, initialTitle, initial
 
   const result = readFfpkgParam(currentPath);
   metadata = result.metadata;
-  if (!result.valid) {
+  if (result.valid) {
+    const metaStr = metadata
+      ? `${metadata.titleName} [${metadata.titleId}] ${metadata.version}`
+      : '(no param.json)';
+    spinner.succeed(`[${type}] Validated — ${metaStr}`);
+  } else if (result.fsValid) {
+    // Complete, structurally-sound image we just can't traverse (e.g. PFS layout).
+    // Package it anyway using fallback metadata instead of aborting. Use a plain
+    // log line (not spinner.warn) so the long message isn't re-rendered.
+    spinner.stop();
+    logger.warn(`[${type}] .ffpkg image is intact but param.json is unreadable (unsupported layout, e.g. PFS) — using filename-based metadata`);
+  } else {
+    // Truncated / corrupt / not a filesystem — don't waste time packaging garbage.
     spinner.fail(`[${type}] .ffpkg validation failed: ${result.message}`);
     const err = new Error(`.ffpkg validation failed: ${result.message}`);
     err.isFfpkgValidationError = true;
     throw err;
   }
-  const metaStr = metadata
-    ? `${metadata.titleName} [${metadata.titleId}] ${metadata.version}`
-    : '(no param.json)';
-  spinner.succeed(`[${type}] Validated — ${metaStr}`);
 
   // Compute final names
   const realTitle = (metadata && metadata.titleName) || initialTitle;
@@ -363,11 +371,12 @@ async function processDownloadedFiles({
   hostName = 'Unknown',
   region = 'Unknown',
   initialTitle = 'Unknown Game',
-  initialPpsa = 'Unknown'
+  initialPpsa = 'Unknown',
+  initialVer = 'v01.00'
 }) {
   let finalTitle = initialTitle;
   let finalPpsa  = initialPpsa;
-  let finalVer   = 'v01.00';
+  let finalVer   = initialVer || 'v01.00';
 
   let isExfatRegion = (region || '').toUpperCase().includes('EXFAT');
 
@@ -403,7 +412,10 @@ async function processDownloadedFiles({
     }
   }
 
-  // For non-exFAT regions, read metadata from the GAME archive before processing
+  // For non-exFAT regions, read metadata from the GAME archive before processing.
+  // Password proven here (extracting just param.json) is reused below to skip a
+  // slow full-archive `bz t` integrity test. undefined = not determined.
+  let gameKnownPassword;
   if (!isExfatRegion) {
     const gameArchives = (fileGroups['GAME'] || []).filter(isArchiveFile);
     if (gameArchives.length > 0) {
@@ -414,6 +426,7 @@ async function processDownloadedFiles({
         finalPpsa  = gameInfo.titleId;
         finalVer   = gameInfo.version;
         finalTitle = gameInfo.titleName;
+        gameKnownPassword = gameInfo.workingPassword || '';
         checkSpinner.succeed(`Read metadata: ${finalTitle} [${finalPpsa}] ${finalVer}`);
       } catch (err) {
         checkSpinner.warn(`Failed to read param.json: ${err.message}. Using fallback metadata.`);
@@ -424,15 +437,21 @@ async function processDownloadedFiles({
   const registeredFiles = [];
 
   // ── Generic archive processor (non-exFAT path) ────────────────────────────
-  const processArchiveSet = async (archiveSet, groupType, baseNameLabel) => {
+  const processArchiveSet = async (archiveSet, groupType, baseNameLabel, knownPassword) => {
     const mainFileName = findMainArchiveFile(archiveSet);
     if (!mainFileName) return;
     const mainFilePath = path.join(downloadDir, mainFileName);
 
     let workingPassword = '';
-    try {
-      workingPassword = await findWorkingPassword(mainFilePath, password ? [password] : []);
-    } catch (e) { /* ignore */ }
+    if (knownPassword !== undefined) {
+      // Password already proven while reading param.json — skip findWorkingPassword's
+      // `bz t` test, which decompresses the whole (multi-GB) archive just to check it.
+      workingPassword = knownPassword;
+    } else {
+      try {
+        workingPassword = await findWorkingPassword(mainFilePath, password ? [password] : []);
+      } catch (e) { /* ignore */ }
+    }
 
     const isSplit    = checkIsSplitArchive(archiveSet);
     const encrypted  = workingPassword !== '';
@@ -556,7 +575,7 @@ async function processDownloadedFiles({
 
     if (archives.length > 0) {
       if (checkIsSplitArchive(archives) || isGame) {
-        await processArchiveSet(archives, type, baseName);
+        await processArchiveSet(archives, type, baseName, isGame ? gameKnownPassword : undefined);
       } else {
         for (let idx = 0; idx < archives.length; idx++) {
           const fileBaseName = archives.length > 1 ? `${baseName}_${idx + 1}` : baseName;

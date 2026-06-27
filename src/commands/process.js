@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const { processDownloadedFiles } = require('../utils/postProcessor');
+const { extractPPSA } = require('../utils/ppsaParser');
+const { extractVersion } = require('../utils/versionParser');
 const logger = require('../utils/logger');
 
 /**
@@ -34,8 +36,11 @@ async function processCommand(filePath, options = {}) {
       password: options.password || '',
       hostName: 'Manual',
       region: isRawExfat ? 'USA (exFAT)' : 'USA',
+      // Seed fallback metadata from the filename — used when param.json can't be
+      // read (e.g. a PFS-layout .ffpkg) so the output is still sensibly named.
       initialTitle: 'Unknown Game',
-      initialPpsa: 'Unknown',
+      initialPpsa: extractPPSA(filename) || 'Unknown',
+      initialVer: extractVersion(filename),
     });
 
     logger.success(`Done: ${finalTitle} [${finalPpsa}][${finalVer}]`);

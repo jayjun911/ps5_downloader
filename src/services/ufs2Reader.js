@@ -43,9 +43,11 @@ function readSuperblock(fd) {
   // struct fs: ... fs_old_cpg@180, fs_ipg@184, fs_fpg@188
   const fs_ipg    = sb.readInt32LE(184);
   const fs_fpg    = sb.readInt32LE(188);
+  // UFS2 64-bit fields: fs_size@1080 = total filesystem size in fragments.
+  const fs_size   = Number(sb.readBigInt64LE(1080));
   // dinode is always 256 in UFS2, so derive inodes-per-block from block size.
   const inopb = Math.floor(fs_bsize / DINODE_SIZE);
-  return { magic, fs_iblkno, fs_ncg, fs_bsize, fs_fsize, fs_frag, fs_ipg, fs_fpg, inopb };
+  return { magic, fs_iblkno, fs_ncg, fs_bsize, fs_fsize, fs_frag, fs_ipg, fs_fpg, fs_size, inopb };
 }
 
 function superblockSane(s) {
@@ -138,7 +140,13 @@ function extractMeta(json) {
 
 /**
  * Validate a .ffpkg (UFS2 image) and extract game metadata from sce_sys/param.json.
- * Returns { valid, metadata, message }.
+ * Returns { valid, fsValid, metadata, message }.
+ *   valid:    param.json was located and parsed (full success).
+ *   fsValid:  the file is a complete, structurally-sound filesystem image — even
+ *             when valid is false. Distinguishes "intact image we just can't
+ *             traverse" (e.g. PFS-layout .ffpkg) from a truncated/garbage file,
+ *             so callers can package the former with fallback metadata but reject
+ *             the latter.
  *   metadata: { titleId, titleName, version } or null.
  * Read-only; never mounts or writes anything.
  */
@@ -147,26 +155,40 @@ function readFfpkgParam(filePath) {
   try {
     fd = fs.openSync(filePath, 'r');
   } catch (e) {
-    return { valid: false, metadata: null, message: `cannot open file: ${e.message}` };
+    return { valid: false, fsValid: false, metadata: null, message: `cannot open file: ${e.message}` };
   }
+  let fsValid = false;
   try {
     const s = readSuperblock(fd);
     const bad = superblockSane(s);
-    if (bad) return { valid: false, metadata: null, message: bad };
+    if (bad) return { valid: false, fsValid: false, metadata: null, message: bad };
+
+    // Completeness: the superblock's declared size (total fragments × fragment
+    // size) must fit within the actual file. A complete image has file size >=
+    // declared size; a shorter file is a truncated/incomplete download. Computed
+    // here but only consulted when param.json can't be read, so it never blocks a
+    // readable image.
+    const actualSize = fs.fstatSync(fd).size;
+    const declaredSize = s.fs_size * s.fs_fsize;
+    fsValid = declaredSize > 0 && actualSize >= declaredSize;
+    // A param.json failure on an incomplete image is reported as truncation;
+    // on a complete image it's an unreadable/unsupported layout.
+    const fail = (msg) => ({ valid: false, fsValid, metadata: null,
+      message: fsValid ? msg : `incomplete image: declares ${declaredSize} bytes but file is ${actualSize} bytes (${msg})` });
 
     const sceIno = lookup(fd, s, ROOTINO, 'sce_sys');
-    if (!sceIno) return { valid: false, metadata: null, message: 'sce_sys directory not found' };
+    if (!sceIno) return fail('sce_sys directory not found (unsupported FS layout, e.g. PFS)');
     const paramIno = lookup(fd, s, sceIno, 'param.json');
-    if (!paramIno) return { valid: false, metadata: null, message: 'sce_sys/param.json not found' };
+    if (!paramIno) return fail('sce_sys/param.json not found');
 
     const pInode = readInode(fd, s, paramIno);
-    if ((pInode.mode & IFMT) !== IFREG) return { valid: false, metadata: null, message: 'param.json is not a regular file' };
-    if (pInode.size <= 0 || pInode.size > 8 * 1024 * 1024) return { valid: false, metadata: null, message: `param.json size implausible (${pInode.size})` };
+    if ((pInode.mode & IFMT) !== IFREG) return fail('param.json is not a regular file');
+    if (pInode.size <= 0 || pInode.size > 8 * 1024 * 1024) return fail(`param.json size implausible (${pInode.size})`);
 
     const json = JSON.parse(readFileData(fd, s, pInode).toString('utf-8'));
-    return { valid: true, metadata: extractMeta(json), message: 'UFS2 valid; param.json parsed' };
+    return { valid: true, fsValid, metadata: extractMeta(json), message: 'UFS2 valid; param.json parsed' };
   } catch (e) {
-    return { valid: false, metadata: null, message: `UFS2 parse error: ${e.message}` };
+    return { valid: false, fsValid, metadata: null, message: `UFS2 parse error: ${e.message}` };
   } finally {
     try { fs.closeSync(fd); } catch (e) {}
   }
