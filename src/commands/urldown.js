@@ -37,7 +37,7 @@ async function urldownCommand(url, options = {}) {
     return;
   }
 
-  const downloadDir = process.env.DOWNLOAD_DIR || path.join(__dirname, '../../downloads');
+  const downloadDir = options.out || process.env.DOWNLOAD_DIR || path.join(__dirname, '../../downloads');
   const spinner = ora('Starting download...').start();
   let downloadResult;
 

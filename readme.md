@@ -137,12 +137,12 @@ dlps download "Game Title" --completed
 
 ---
 
-### `dlps urldown <url>`
-Download directly from a 1fichier, Datanodes, or Vikingfile URL and run the full post-processing pipeline.
+### `dlps download <url>`
+If the argument is a direct file URL (1fichier, Datanodes, or Vikingfile), `download` fetches the file directly and runs the full post-processing pipeline — no title/web-list lookup. (This replaces the former `urldown` command.)
 
 ```bash
-dlps urldown "https://1fichier.com/?abc123"
-dlps urldown "https://datanodes.to/abc123" --password "DLPSGAME.COM"
+dlps download "https://1fichier.com/?abc123"
+dlps download "https://datanodes.to/abc123" --password "DLPSGAME.COM"
 ```
 
 ---
@@ -388,12 +388,12 @@ dlps download "Game Title" --completed
 
 ---
 
-### `dlps urldown <url>`
-1fichier·Datanodes·Vikingfile URL에서 직접 다운로드 후 후처리 파이프라인을 실행합니다.
+### `dlps download <url>`
+인자가 직접 파일 URL(1fichier·Datanodes·Vikingfile)이면 `download`가 제목/웹 리스트 조회 없이 파일을 바로 받아 후처리 파이프라인을 실행합니다. (기존 `urldown` 명령을 대체합니다.)
 
 ```bash
-dlps urldown "https://1fichier.com/?abc123"
-dlps urldown "https://datanodes.to/abc123" --password "DLPSGAME.COM"
+dlps download "https://1fichier.com/?abc123"
+dlps download "https://datanodes.to/abc123" --password "DLPSGAME.COM"
 ```
 
 ---

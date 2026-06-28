@@ -26,7 +26,7 @@ program
 
 program
   .command('download')
-  .argument('[title]', 'Title of the game to download')
+  .argument('[title|url]', 'Game title to download, or a direct file URL (1fichier.com, datanodes.to, vikingfile.com)')
   .option('-l, --limit <number>', 'Batch download first N games from TBD list')
   .option('-t, --type <string>', 'Download only specific file types (e.g. GAME, DLC, BACKPORT, UPDATE)')
   .option('-s, --section', 'Interactively select a section from the available list')
@@ -34,7 +34,7 @@ program
   .option('-p, --password <string>', 'Override archive password (used when auto-detection fails)')
   .option('-o, --out <path>', 'Override the default download directory')
   .option('-f, --fallback', 'Allow non-exFAT sections as a fallback when an exFAT section exists (default: exFAT-exclusive)')
-  .description('Download a specific game or a batch of games from TBD list')
+  .description('Download a game by title, a batch from the TBD list, or a direct file URL')
   .action((title, options) => {
     downloadCommand(title, options);
   });
@@ -91,16 +91,6 @@ program
   .action((platform) => {
     const setPlatformCommand = require('./commands/set-platform');
     setPlatformCommand(platform);
-  });
-
-program
-  .command('urldown')
-  .argument('<url>', '1fichier.com, datanodes.to, or vikingfile.com file URL')
-  .option('-p, --password <string>', 'Archive password (if auto-detection fails)')
-  .description('Download directly from a file URL and post-process (rename, unpack, register)')
-  .action((url, options) => {
-    const urldownCommand = require('./commands/urldown');
-    urldownCommand(url, options);
   });
 
 program.parse(process.argv);

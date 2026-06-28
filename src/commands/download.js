@@ -443,6 +443,13 @@ async function downloadCommand(titleQuery, options = {}) {
   const limit = options.limit ? parseInt(options.limit, 10) : null;
 
   try {
+    // Direct file URL → download the file directly and post-process.
+    if (titleQuery && /^https?:\/\//i.test(titleQuery)) {
+      const urldownCommand = require('./urldown');
+      await urldownCommand(titleQuery, options);
+      return;
+    }
+
     if (limit !== null) {
       if (isNaN(limit) || limit <= 0) {
         logger.error('Invalid limit value. Please specify a positive integer.');
