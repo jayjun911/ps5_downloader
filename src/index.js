@@ -85,6 +85,16 @@ program
   });
 
 program
+  .command('scan')
+  .argument('[name]', 'Game name to scan (partial match). Omit to scan the entire PS4 list.')
+  .option('-r, --refresh', 'Force re-scrape subpages instead of using cached data')
+  .description('Visit PS4-list subpages and label PS1/PS2 emulation packages, no download (PS4 only)')
+  .action((name, options) => {
+    const scanCommand = require('./commands/scan');
+    scanCommand(name, options);
+  });
+
+program
   .command('set-platform')
   .argument('[platform]', 'Console platform to set as default (ps5, ps4, ps3, ps2, switch, wii, wiiu, 3ds, xbox-jtag, xbox-iso, psp, psvita, pc)')
   .description('Set or show the default game console platform')
