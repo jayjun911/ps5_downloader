@@ -15,13 +15,13 @@ program
 
 program
   .command('list')
-  .argument('[source]', 'Game source to display: all, local, dl/downloaded, web, tbd, excluded, ps1, ps2, ps12, other', 'all')
-  .option('-n, --name <query>', 'Search query for game title or PPSA code')
+  .argument('[source]', 'Game source: all, local, dl/downloaded, web, tbd, excluded, ps1, ps2, ps12, other (defaults to all)', 'all')
+  .argument('[query]', 'Search query for game title or game ID. If the first argument is not a known source, it is treated as the query (e.g. `list "metal gear"`)')
   .option('-l, --limit <number>', 'Limit the number of displayed results')
   .option('-r, --refresh', 'Force refresh the web game list cache')
   .description('List and search games from local database and web lists')
-  .action((source, options) => {
-    listCommand(source, options);
+  .action((source, query, options) => {
+    listCommand(source, query, options);
   });
 
 program

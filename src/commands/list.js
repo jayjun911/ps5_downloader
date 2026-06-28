@@ -5,19 +5,31 @@ const { loadProgressSet } = require('../services/progressDb');
 const logger = require('../utils/logger');
 const chalk = require('chalk');
 
+// Known source keywords. If the first positional argument isn't one of these,
+// it is interpreted as a search query against the default 'all' source.
+const KNOWN_SOURCES = new Set([
+  'all', 'local', 'dl', 'downloaded', 'down', 'web', 'tbd', 'excluded',
+  'ps1', 'ps2', 'ps12', 'ps1-2', 'ps1/2', 'other'
+]);
+
 /**
  * Handles the 'list' CLI command.
- * 
- * @param {string} source 'all', 'local', 'dl', 'web', 'tbd'
- * @param {{name: string}} options
+ *
+ * @param {string} source 'all', 'local', 'dl', 'web', 'tbd', ... or a search query
+ * @param {string} query  search query (when source is also given)
+ * @param {{limit?: string, refresh?: boolean}} options
  */
-async function listCommand(source = 'all', options = {}) {
-  const query = options.name || '';
-  
+async function listCommand(source = 'all', query = '', options = {}) {
+  // `list "metal gear"` — a single non-source argument is treated as the query.
+  if (!query && source && !KNOWN_SOURCES.has(String(source).toLowerCase().trim())) {
+    query = source;
+    source = 'all';
+  }
+
   try {
     const localGames = loadLocalLibrary();
     const downloadedGames = loadDownloadedGames();
-    
+
     // Normalize source aliases to support 'dl', 'downloaded', 'down'
     let normalizedSource = String(source).toLowerCase().trim();
     if (normalizedSource === 'downloaded' || normalizedSource === 'down') {
