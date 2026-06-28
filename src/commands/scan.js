@@ -118,7 +118,7 @@ async function scanCommand(query, options = {}) {
   }
 
   const delayLabel = baseDelay > 0 ? `~${(baseDelay / 1000).toFixed(1)}s throttle` : 'no throttle';
-  logger.info(`Scanning ${games.length} game(s) for non-PS4 (PS1/PS2/Saturn) titles... [${delayLabel}]`);
+  logger.info(`Scanning ${games.length} game(s) for non-PS4 (PS1/PS2/Saturn/PSP) titles... [${delayLabel}]`);
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   // Jittered delay in [0.75x, 1.5x] of base to avoid a fixed-interval pattern.

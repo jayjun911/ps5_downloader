@@ -32,18 +32,28 @@ const CONSOLE_LABEL = {
   ps1: 'PS1',
   'ps1-2': 'PS1/2',
   saturn: 'SATURN',
+  psp: 'PSP',
 };
 
-// Sega Saturn emulation packages repackaged for PS4 use arbitrary per-game
-// vanity content IDs (LAUB00001, BOMB81070, ...) so they can't be matched by a
-// fixed prefix. They're instead identified by tags inside the subpage payload.
-const SATURN_TAG_REGEX = /\[\s*SATURN\s*to\s*PS4\s*\]|SATURN\s*emu/i;
+// Emulation packages repackaged for PS4 use arbitrary per-game vanity content
+// IDs (LAUB00001, BOMB81070, NPEZ00366, ...) so they can't be matched by a fixed
+// prefix. They're identified by "<system> to PS4" / "<system> emu" tags inside
+// the subpage payload. Add a row here to support a new emulated system.
+const EMU_TAGS = [
+  { console: 'saturn', regex: /\[\s*SATURN\s*to\s*PS4\s*\]|SATURN\s*to\s*PS4|SATURN\s*emu/i },
+  { console: 'psp',    regex: /\[\s*PSP\s*to\s*PS4\s*\]|PSP\s*to\s*PS4|PSP\s*emu/i },
+];
 
 /**
- * Returns true if text carries a Sega Saturn-on-PS4 emulation marker.
+ * Returns the console key for an emulation-package tag found in text, or null.
+ * e.g. "[SATURNtoPS4]" -> 'saturn', "Game PSP to PS4 (FPKG)" -> 'psp'.
  */
-function hasSaturnTag(text) {
-  return !!text && SATURN_TAG_REGEX.test(text);
+function detectEmuConsole(text) {
+  if (!text) return null;
+  for (const t of EMU_TAGS) {
+    if (t.regex.test(text)) return t.console;
+  }
+  return null;
 }
 
 const KNOWN_PREFIXES = Object.keys(PREFIX_CONSOLE);
@@ -119,8 +129,8 @@ module.exports = {
   PREFIX_CONSOLE,
   CONSOLE_LABEL,
   TITLE_ID_REGEX,
-  SATURN_TAG_REGEX,
-  hasSaturnTag,
+  EMU_TAGS,
+  detectEmuConsole,
   classifyPrefix,
   classifyId,
   extractTitleId,
