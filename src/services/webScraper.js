@@ -4,6 +4,7 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const { normalizeTitle } = require('../utils/titleNormalizer');
 const { getCurrentPlatform, getCurrentPlatformKey } = require('./platformConfig');
+const { extractTitleId } = require('../utils/consoleClassifier');
 
 const CACHE_DIR = path.join(__dirname, '../../data/cache');
 const SUBPAGE_CACHE_DIR = path.join(CACHE_DIR, 'subpages');
@@ -345,10 +346,10 @@ To bypass this block, please follow these steps:
 
   $('.post-body.entry-content p').each((_, pEl) => {
     const pText = $(pEl).text().trim();
-    const ppsaMatch = pText.match(/PPSA\d+/i);
-    if (ppsaMatch) {
-      const ppsa = ppsaMatch[0].toUpperCase();
-      let region = pText.replace(/PPSA\d+/i, '').replace(/^[–\s\-\u8211\u8212\u2013\u2014]+/i, '').trim();
+    const idMatch = extractTitleId(pText, { preferConsole: getCurrentPlatformKey() });
+    if (idMatch) {
+      const ppsa = idMatch.id;
+      let region = pText.replace(idMatch.raw, '').replace(/^[–\s\-\u8211\u8212\u2013\u2014]+/i, '').trim();
       
       // Find the next su-spoiler div sibling (up to 3 sibling tags down)
       let nextEl = $(pEl).next();
@@ -408,10 +409,10 @@ To bypass this block, please follow these steps:
 
           $decoded('p, div, span, td, li').each((_, el) => {
             const txt = $decoded(el).text().trim();
-            const match = txt.match(/PPSA\d+/i);
-            if (match) {
-              ppsa = match[0].toUpperCase();
-              region = txt.replace(/PPSA\d+/i, '').trim();
+            const m2 = extractTitleId(txt, { preferConsole: getCurrentPlatformKey() });
+            if (m2) {
+              ppsa = m2.id;
+              region = txt.replace(m2.raw, '').trim();
               region = region
                 .replace(/&#8211;|&#8212;|&ndash;|&mdash;/g, '-')
                 .replace(/^[\s\-\u8211\u8212\u2013\u2014]+/i, '')

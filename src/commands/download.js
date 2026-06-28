@@ -7,7 +7,9 @@ const { downloadFromDatanodes } = require('../services/datanodesDownloader');
 const { extractVersion } = require('../utils/versionParser');
 const { processDownloadedFiles, getUniqueFilePath } = require('../utils/postProcessor');
 const { loadProgressSet, markProgress, clearProgress } = require('../services/progressDb');
-const { platformDataPath } = require('../services/platformConfig');
+const { platformDataPath, getCurrentPlatformKey } = require('../services/platformConfig');
+const { setLabel } = require('../services/labelDb');
+const { classifyId, consoleLabel } = require('../utils/consoleClassifier');
 const logger = require('../utils/logger');
 const open = require('open');
 const readline = require('readline');
@@ -85,6 +87,25 @@ async function downloadSingleGame(game, options = {}) {
     const sections = await getGameSubpageData(game.slug, game.url);
     if (sections.length === 0) {
       throw new Error('No download sections found on game subpage.');
+    }
+
+    // Detect non-active-platform titles (e.g. PS1/PS2 emulation packages mixed
+    // into the PS4 list). If no section matches the active console but some
+    // resolve to another console, label the game and skip the download.
+    const activeConsole = getCurrentPlatformKey();
+    const detected = sections.map(s => classifyId(s.ppsa)).filter(Boolean);
+    const hasActive = detected.some(d => d.console === activeConsole);
+    if (!hasActive && detected.length > 0) {
+      const other = detected[0];
+      const idSection = sections.find(s => classifyId(s.ppsa)?.console === other.console);
+      setLabel(game.title, other.console, idSection ? idSection.ppsa : '');
+      spinner.stop();
+      logger.warn(
+        `"${game.title}" is a ${consoleLabel(other.console)} title` +
+        `${idSection ? ` (${idSection.ppsa})` : ''}, not ${activeConsole.toUpperCase()}. ` +
+        `Marked as [${consoleLabel(other.console)}] and skipping.`
+      );
+      return;
     }
 
     // Check if local library has PPSA
@@ -452,8 +473,12 @@ async function downloadCommand(titleQuery, options = {}) {
       const excludedSet = new Set(excludedGames.map(g => g.normalizedTitle));
 
       const progressSet = loadProgressSet();
+      const { loadLabelMap } = require('../services/labelDb');
+      const labelMap = loadLabelMap();
       const tbdList = [];
       for (const g of webList) {
+        // Skip entries already labeled as another console (PS1/PS2 emu packages).
+        if (labelMap.has(g.normalizedTitle)) continue;
         const matchInfo = getWebGameStatus(g, localMap, dlMap, excludedSet, localPpsaMap, dlPpsaMap, progressSet);
         if (matchInfo.status === 'tbd') {
           tbdList.push(g);

@@ -15,7 +15,7 @@ program
 
 program
   .command('list')
-  .argument('[source]', 'Game source to display: all, local, dl/downloaded, web, tbd, excluded', 'all')
+  .argument('[source]', 'Game source to display: all, local, dl/downloaded, web, tbd, excluded, ps1, ps2, ps12, other', 'all')
   .option('-n, --name <query>', 'Search query for game title or PPSA code')
   .option('-l, --limit <number>', 'Limit the number of displayed results')
   .option('-r, --refresh', 'Force refresh the web game list cache')

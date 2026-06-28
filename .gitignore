@@ -12,5 +12,6 @@ data/downloaded*.xml
 data/excluded*.json
 data/failed_downloads*.json
 data/progress*.json
+data/labels*.json
 flatten-audit-report.txt
 flatten-audit-console.log

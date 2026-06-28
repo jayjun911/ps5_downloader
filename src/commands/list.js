@@ -49,6 +49,9 @@ async function listCommand(source = 'all', options = {}) {
     const excludedGames = loadExcludedGames();
     const excludedSet = new Set(excludedGames.map(g => g.normalizedTitle));
 
+    const { loadLabels, loadLabelMap } = require('../services/labelDb');
+    const labelMap = loadLabelMap();
+
     let displayList = [];
 
     if (normalizedSource === 'local') {
@@ -80,10 +83,24 @@ async function listCommand(source = 'all', options = {}) {
         status: 'excluded',
         normalizedTitle: g.normalizedTitle
       }));
+    } else if (['ps1', 'ps2', 'ps12', 'ps1-2', 'ps1/2', 'other'].includes(normalizedSource)) {
+      // Console-label sources: games in the active list that belong to another
+      // console (PS1/PS2 emulation packages), as detected during download.
+      const targetConsole = (normalizedSource === 'ps12' || normalizedSource === 'ps1/2') ? 'ps1-2' : normalizedSource;
+      displayList = loadLabels()
+        .filter(l => normalizedSource === 'other' || l.console === targetConsole)
+        .map(l => ({
+          title: l.title,
+          ppsa: l.gameId || '',
+          status: l.console,
+          normalizedTitle: l.normalizedTitle
+        }));
     } else if (normalizedSource === 'tbd') {
       const webList = await getWebGameList(!!options.refresh);
       displayList = [];
       for (const g of webList) {
+        // Labeled (non-active-console) games are not "to be downloaded".
+        if (labelMap.has(g.normalizedTitle)) continue;
         const matchInfo = getWebGameStatus(g, localMap, dlMap, excludedSet, localPpsaMap, dlPpsaMap, progressSet);
         if (matchInfo.status === 'tbd') {
           displayList.push({
@@ -101,9 +118,21 @@ async function listCommand(source = 'all', options = {}) {
       // Process web list and check against local, downloaded, & excluded
       for (const wg of webList) {
         processedNormalized.add(wg.normalizedTitle);
-        
+
+        // A console label (PS1/PS2) takes precedence over the web/tbd status.
+        const label = labelMap.get(wg.normalizedTitle);
+        if (label) {
+          displayList.push({
+            title: wg.title,
+            ppsa: label.gameId || '',
+            status: label.console,
+            normalizedTitle: wg.normalizedTitle
+          });
+          continue;
+        }
+
         const matchInfo = getWebGameStatus(wg, localMap, dlMap, excludedSet, localPpsaMap, dlPpsaMap, progressSet);
-        
+
         displayList.push({
           title: wg.title,
           ppsa: matchInfo.ppsa,
@@ -179,13 +208,21 @@ async function listCommand(source = 'all', options = {}) {
       const titleStr = game.title.padEnd(50, ' ').substring(0, 50);
       const ppsaStr = (game.ppsa || '').padEnd(10, ' ');
       
-      let statusStr = `[${game.status}]`;
-      if (game.status === 'local') statusStr = chalk.blue(statusStr);
-      else if (game.status === 'downloaded') statusStr = chalk.green(statusStr);
-      else if (game.status === 'tbd') statusStr = chalk.yellow(statusStr);
-      else if (game.status === 'excluded') statusStr = chalk.red(statusStr);
-      else if (game.status === 'progress') statusStr = chalk.magenta(statusStr);
-      else statusStr = chalk.gray(statusStr);
+      const { consoleLabel } = require('../utils/consoleClassifier');
+      const CONSOLE_STATUSES = ['ps1', 'ps2', 'ps1-2', 'ps5', 'ps4'];
+      let statusStr;
+      if (CONSOLE_STATUSES.includes(game.status)) {
+        // Console labels (PS1/PS2 emulation packages mixed into the list).
+        statusStr = chalk.cyan(`[${consoleLabel(game.status)}]`);
+      } else {
+        statusStr = `[${game.status}]`;
+        if (game.status === 'local') statusStr = chalk.blue(statusStr);
+        else if (game.status === 'downloaded') statusStr = chalk.green(statusStr);
+        else if (game.status === 'tbd') statusStr = chalk.yellow(statusStr);
+        else if (game.status === 'excluded') statusStr = chalk.red(statusStr);
+        else if (game.status === 'progress') statusStr = chalk.magenta(statusStr);
+        else statusStr = chalk.gray(statusStr);
+      }
 
       console.log(`${chalk.gray(indexStr)} ${titleStr}  ${chalk.cyan(ppsaStr)}  ${statusStr}`);
     });
