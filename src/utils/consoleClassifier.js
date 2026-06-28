@@ -31,7 +31,20 @@ const CONSOLE_LABEL = {
   ps2: 'PS2',
   ps1: 'PS1',
   'ps1-2': 'PS1/2',
+  saturn: 'SATURN',
 };
+
+// Sega Saturn emulation packages repackaged for PS4 use arbitrary per-game
+// vanity content IDs (LAUB00001, BOMB81070, ...) so they can't be matched by a
+// fixed prefix. They're instead identified by tags inside the subpage payload.
+const SATURN_TAG_REGEX = /\[\s*SATURN\s*to\s*PS4\s*\]|SATURN\s*emu/i;
+
+/**
+ * Returns true if text carries a Sega Saturn-on-PS4 emulation marker.
+ */
+function hasSaturnTag(text) {
+  return !!text && SATURN_TAG_REGEX.test(text);
+}
 
 const KNOWN_PREFIXES = Object.keys(PREFIX_CONSOLE);
 
@@ -106,6 +119,8 @@ module.exports = {
   PREFIX_CONSOLE,
   CONSOLE_LABEL,
   TITLE_ID_REGEX,
+  SATURN_TAG_REGEX,
+  hasSaturnTag,
   classifyPrefix,
   classifyId,
   extractTitleId,

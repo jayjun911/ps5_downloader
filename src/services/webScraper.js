@@ -4,7 +4,7 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const { normalizeTitle } = require('../utils/titleNormalizer');
 const { getCurrentPlatform, getCurrentPlatformKey } = require('./platformConfig');
-const { extractTitleId } = require('../utils/consoleClassifier');
+const { extractTitleId, hasSaturnTag } = require('../utils/consoleClassifier');
 
 const CACHE_DIR = path.join(__dirname, '../../data/cache');
 const SUBPAGE_CACHE_DIR = path.join(CACHE_DIR, 'subpages');
@@ -425,6 +425,19 @@ To bypass this block, please follow these steps:
             sections.push({
               ppsa,
               region: region || 'Unknown',
+              base64Payload
+            });
+          } else if (hasSaturnTag(decoded)) {
+            // Sega Saturn emulation package: no known title-ID prefix, identified
+            // by the [SATURNtoPS4] / "SATURN emu" tag. Capture its vanity ID for
+            // display and mark the section's console explicitly.
+            const decodedText = $decoded.root().text();
+            const vanity = decodedText.match(/\[\s*SATURN\s*to\s*PS4\s*\][^A-Za-z0-9]*([A-Z]{2,5}\d{3,6})/i)
+              || decodedText.match(/\b([A-Z]{2,5}\d{3,6})\b/);
+            sections.push({
+              ppsa: vanity ? vanity[1].toUpperCase() : 'SATURN',
+              region: 'SATURNtoPS4',
+              console: 'saturn',
               base64Payload
             });
           }

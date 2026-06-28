@@ -118,7 +118,7 @@ async function scanCommand(query, options = {}) {
   }
 
   const delayLabel = baseDelay > 0 ? `~${(baseDelay / 1000).toFixed(1)}s throttle` : 'no throttle';
-  logger.info(`Scanning ${games.length} game(s) for non-PS4 (PS1/PS2) titles... [${delayLabel}]`);
+  logger.info(`Scanning ${games.length} game(s) for non-PS4 (PS1/PS2/Saturn) titles... [${delayLabel}]`);
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   // Jittered delay in [0.75x, 1.5x] of base to avoid a fixed-interval pattern.
@@ -142,20 +142,21 @@ async function scanCommand(query, options = {}) {
     const spinner = ora(`[${i + 1}/${games.length}] ${g.title}`).start();
     try {
       const sections = await getGameSubpageData(g.slug, g.url, !!options.refresh);
-      const detected = sections.map(s => classifyId(s.ppsa)).filter(Boolean);
+      const detected = sections
+        .map(s => {
+          const console = s.console || (classifyId(s.ppsa) || {}).console;
+          return console ? { console, id: s.ppsa } : null;
+        })
+        .filter(Boolean);
       const hasPs4 = detected.some(d => d.console === 'ps4');
 
       if (!hasPs4 && detected.length > 0) {
         const other = detected[0];
-        const idSection = sections.find(s => {
-          const c = classifyId(s.ppsa);
-          return c && c.console === other.console;
-        });
-        setLabel(g.title, other.console, idSection ? idSection.ppsa : '');
+        setLabel(g.title, other.console, other.id);
         labeled++;
         spinner.succeed(
           `${g.title} → ${chalk.cyan(`[${consoleLabel(other.console)}]`)}` +
-          `${idSection ? ` ${chalk.gray(idSection.ppsa)}` : ''}`
+          `${other.id ? ` ${chalk.gray(other.id)}` : ''}`
         );
       } else if (hasPs4) {
         // Genuine PS4 title — clear any stale label from a previous scan.
@@ -183,7 +184,7 @@ async function scanCommand(query, options = {}) {
 
   const verb = aborted ? 'Scan stopped' : 'Scan complete';
   logger.success(
-    `${verb} — ${chalk.cyan(labeled)} labeled (PS1/PS2), ` +
+    `${verb} — ${chalk.cyan(labeled)} labeled (non-PS4), ` +
     `${ps4Count} PS4, ${noId} no-ID, ${failed} failed.`
   );
 }

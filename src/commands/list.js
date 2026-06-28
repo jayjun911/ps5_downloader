@@ -9,7 +9,7 @@ const chalk = require('chalk');
 // it is interpreted as a search query against the default 'all' source.
 const KNOWN_SOURCES = new Set([
   'all', 'local', 'dl', 'downloaded', 'down', 'web', 'tbd', 'excluded',
-  'ps1', 'ps2', 'ps12', 'ps1-2', 'ps1/2', 'other'
+  'ps1', 'ps2', 'ps12', 'ps1-2', 'ps1/2', 'saturn', 'other'
 ]);
 
 /**
@@ -95,7 +95,7 @@ async function listCommand(source = 'all', query = '', options = {}) {
         status: 'excluded',
         normalizedTitle: g.normalizedTitle
       }));
-    } else if (['ps1', 'ps2', 'ps12', 'ps1-2', 'ps1/2', 'other'].includes(normalizedSource)) {
+    } else if (['ps1', 'ps2', 'ps12', 'ps1-2', 'ps1/2', 'saturn', 'other'].includes(normalizedSource)) {
       // Console-label sources: games in the active list that belong to another
       // console (PS1/PS2 emulation packages), as detected during download.
       const targetConsole = (normalizedSource === 'ps12' || normalizedSource === 'ps1/2') ? 'ps1-2' : normalizedSource;
@@ -221,7 +221,7 @@ async function listCommand(source = 'all', query = '', options = {}) {
       const ppsaStr = (game.ppsa || '').padEnd(10, ' ');
       
       const { consoleLabel } = require('../utils/consoleClassifier');
-      const CONSOLE_STATUSES = ['ps1', 'ps2', 'ps1-2', 'ps5', 'ps4'];
+      const CONSOLE_STATUSES = ['ps1', 'ps2', 'ps1-2', 'ps5', 'ps4', 'saturn'];
       let statusStr;
       if (CONSOLE_STATUSES.includes(game.status)) {
         // Console labels (PS1/PS2 emulation packages mixed into the list).

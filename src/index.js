@@ -15,7 +15,7 @@ program
 
 program
   .command('list')
-  .argument('[source]', 'Game source: all, local, dl/downloaded, web, tbd, excluded, ps1, ps2, ps12, other (defaults to all)', 'all')
+  .argument('[source]', 'Game source: all, local, dl/downloaded, web, tbd, excluded, ps1, ps2, ps12, saturn, other (defaults to all)', 'all')
   .argument('[query]', 'Search query for game title or game ID. If the first argument is not a known source, it is treated as the query (e.g. `list "metal gear"`)')
   .option('-l, --limit <number>', 'Limit the number of displayed results')
   .option('-r, --refresh', 'Force refresh the web game list cache')
@@ -91,7 +91,7 @@ program
   .option('-d, --delay <ms>', 'Throttle: delay before each network fetch in ms (default 1500, jittered; 0 to disable)')
   .option('-r, --refresh', 'Force re-scrape subpages instead of using cached data (re-scans already-scanned games)')
   .option('--reset', 'Clear this platform\'s scan-progress marks before scanning')
-  .description('Visit PS4-list subpages and label PS1/PS2 emulation packages, no download (PS4 only)')
+  .description('Visit PS4-list subpages and label non-PS4 (PS1/PS2/Saturn) packages, no download (PS4 only)')
   .action((name, options) => {
     const scanCommand = require('./commands/scan');
     scanCommand(name, options);

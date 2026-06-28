@@ -93,16 +93,20 @@ async function downloadSingleGame(game, options = {}) {
     // into the PS4 list). If no section matches the active console but some
     // resolve to another console, label the game and skip the download.
     const activeConsole = getCurrentPlatformKey();
-    const detected = sections.map(s => classifyId(s.ppsa)).filter(Boolean);
+    const detected = sections
+      .map(s => {
+        const console = s.console || (classifyId(s.ppsa) || {}).console;
+        return console ? { console, id: s.ppsa } : null;
+      })
+      .filter(Boolean);
     const hasActive = detected.some(d => d.console === activeConsole);
     if (!hasActive && detected.length > 0) {
       const other = detected[0];
-      const idSection = sections.find(s => classifyId(s.ppsa)?.console === other.console);
-      setLabel(game.title, other.console, idSection ? idSection.ppsa : '');
+      setLabel(game.title, other.console, other.id);
       spinner.stop();
       logger.warn(
         `"${game.title}" is a ${consoleLabel(other.console)} title` +
-        `${idSection ? ` (${idSection.ppsa})` : ''}, not ${activeConsole.toUpperCase()}. ` +
+        `${other.id ? ` (${other.id})` : ''}, not ${activeConsole.toUpperCase()}. ` +
         `Marked as [${consoleLabel(other.console)}] and skipping.`
       );
       return;
