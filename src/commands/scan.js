@@ -7,6 +7,7 @@ const { setLabel, removeLabel, getLabel, loadLabelMap } = require('../services/l
 const { loadLocalLibrary } = require('../services/localLibrary');
 const { loadDownloadedGames } = require('../services/downloadedDb');
 const { loadProgressSet } = require('../services/progressDb');
+const { loadScannedSet, markScanned, clearScanned } = require('../services/scannedDb');
 const logger = require('../utils/logger');
 
 /**
@@ -78,16 +79,30 @@ async function scanCommand(query, options = {}) {
     return;
   }
 
+  if (options.reset) {
+    clearScanned();
+    logger.info('Cleared scan-progress marks for this platform.');
+  }
+
   let games;
   try {
     if (limit !== null) {
-      // Top N of the TBD list (optionally filtered by name).
+      // Top N of the *unscanned* TBD list (skipping games already scanned, so
+      // the cursor advances instead of re-hitting confirmed-PS4 titles).
       const tbd = await buildTbdList(query);
       if (tbd.length === 0) {
         logger.info('No TBD (To Be Downloaded) games to scan.');
         return;
       }
-      games = tbd.slice(0, limit);
+      const scannedSet = loadScannedSet();
+      const unscanned = options.refresh ? tbd : tbd.filter(g => !scannedSet.has(g.normalizedTitle));
+      const alreadyScanned = tbd.length - unscanned.length;
+      if (unscanned.length === 0) {
+        logger.info(`All ${tbd.length} TBD game(s) already scanned. Use --refresh to re-scan or --reset to clear marks.`);
+        return;
+      }
+      games = unscanned.slice(0, limit);
+      logger.info(`TBD: ${tbd.length} | already scanned: ${alreadyScanned} | scanning next: ${games.length}`);
     } else if (query) {
       games = await findGameInWebList(query);
       if (games.length === 0) {
@@ -151,6 +166,8 @@ async function scanCommand(query, options = {}) {
         noId++;
         spinner.stop();
       }
+      // Subpage parsed successfully → remember it so future scans skip it.
+      markScanned(g.normalizedTitle);
     } catch (err) {
       failed++;
       spinner.fail(`${g.title}: ${err.message}`);

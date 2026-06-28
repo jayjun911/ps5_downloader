@@ -13,5 +13,6 @@ data/excluded*.json
 data/failed_downloads*.json
 data/progress*.json
 data/labels*.json
+data/scanned*.json
 flatten-audit-report.txt
 flatten-audit-console.log
