@@ -8,9 +8,12 @@ const chalk = require('chalk');
 // Known source keywords. If the first positional argument isn't one of these,
 // it is interpreted as a search query against the default 'all' source.
 const KNOWN_SOURCES = new Set([
-  'all', 'local', 'dl', 'downloaded', 'down', 'web', 'tbd', 'excluded',
+  'all', 'local', 'dl', 'downloaded', 'down', 'web', 'tbd', 'excluded', 'dupe',
   'ps1', 'ps2', 'ps12', 'ps1-2', 'ps1/2', 'saturn', 'psp', 'other'
 ]);
+
+// A downloaded entry created by the `dupe` command (source "Manual (Dupe)").
+const isDupeEntry = (g) => !!(g && g.source && /dupe/i.test(g.source));
 
 /**
  * Handles the 'list' CLI command.
@@ -77,7 +80,14 @@ async function listCommand(source = 'all', query = '', options = {}) {
       displayList = downloadedGames.map(g => ({
         title: g.title,
         ppsa: g.ppsa || '',
-        status: 'downloaded',
+        status: isDupeEntry(g) ? 'dupe' : 'downloaded',
+        normalizedTitle: g.normalizedTitle
+      }));
+    } else if (normalizedSource === 'dupe') {
+      displayList = downloadedGames.filter(isDupeEntry).map(g => ({
+        title: g.title,
+        ppsa: g.ppsa || '',
+        status: 'dupe',
         normalizedTitle: g.normalizedTitle
       }));
     } else if (normalizedSource === 'web') {
@@ -162,7 +172,7 @@ async function listCommand(source = 'all', query = '', options = {}) {
           if (dlMap.has(lg.normalizedTitle)) {
             const dg = dlMap.get(lg.normalizedTitle);
             ppsa = dg.ppsa || ppsa;
-            status = 'downloaded';
+            status = isDupeEntry(dg) ? 'dupe' : 'downloaded';
           }
           
           displayList.push({
@@ -181,7 +191,7 @@ async function listCommand(source = 'all', query = '', options = {}) {
           displayList.push({
             title: dg.title,
             ppsa: dg.ppsa || '',
-            status: 'downloaded',
+            status: isDupeEntry(dg) ? 'dupe' : 'downloaded',
             normalizedTitle: dg.normalizedTitle
           });
           processedNormalized.add(dg.normalizedTitle);
@@ -230,6 +240,7 @@ async function listCommand(source = 'all', query = '', options = {}) {
         statusStr = `[${game.status}]`;
         if (game.status === 'local') statusStr = chalk.blue(statusStr);
         else if (game.status === 'downloaded') statusStr = chalk.green(statusStr);
+        else if (game.status === 'dupe') statusStr = chalk.gray(statusStr);
         else if (game.status === 'tbd') statusStr = chalk.yellow(statusStr);
         else if (game.status === 'excluded') statusStr = chalk.red(statusStr);
         else if (game.status === 'progress') statusStr = chalk.magenta(statusStr);

@@ -35,9 +35,13 @@ function getCachedSubpagePpsas(slug) {
  * @returns {{status: string, ppsa: string}}
  */
 function getWebGameStatus(webGame, localMap, dlMap, excludedSet, localPpsaMap, dlPpsaMap, progressSet = null) {
+  // A downloaded entry marked via the `dupe` command surfaces as 'dupe', not 'downloaded'.
+  const dlStatus = (dg) => (dg && dg.source && /dupe/i.test(dg.source)) ? 'dupe' : 'downloaded';
+
   // 1. Direct title matching
   if (dlMap.has(webGame.normalizedTitle)) {
-    return { status: 'downloaded', ppsa: dlMap.get(webGame.normalizedTitle).ppsa || '' };
+    const dg = dlMap.get(webGame.normalizedTitle);
+    return { status: dlStatus(dg), ppsa: dg.ppsa || '' };
   }
   if (localMap.has(webGame.normalizedTitle)) {
     return { status: 'local', ppsa: localMap.get(webGame.normalizedTitle).ppsa || '' };
@@ -50,7 +54,7 @@ function getWebGameStatus(webGame, localMap, dlMap, excludedSet, localPpsaMap, d
   const ppsas = getCachedSubpagePpsas(webGame.slug);
   for (const ppsa of ppsas) {
     if (dlPpsaMap.has(ppsa)) {
-      return { status: 'downloaded', ppsa };
+      return { status: dlStatus(dlPpsaMap.get(ppsa)), ppsa };
     }
     if (localPpsaMap.has(ppsa)) {
       return { status: 'local', ppsa };

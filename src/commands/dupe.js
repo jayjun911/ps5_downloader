@@ -2,6 +2,7 @@ const { findGameInWebList, getWebGameList } = require('../services/webScraper');
 const { loadLocalLibrary } = require('../services/localLibrary');
 const { loadDownloadedGames, addDownloadedGame } = require('../services/downloadedDb');
 const { normalizeTitle } = require('../utils/titleNormalizer');
+const { extractTitleId } = require('../utils/consoleClassifier');
 const logger = require('../utils/logger');
 const readline = require('readline');
 const chalk = require('chalk');
@@ -93,11 +94,15 @@ async function dupeCommand(query) {
     }
 
     // Combine local and downloaded library games to suggest matching dupes
+    // Resolve a game's title ID, falling back to extracting it from the filename
+    // (so PS4 parents resolve their CUSA even if the stored id is blank).
+    const resolveId = (g) => g.ppsa || (g.fileName && extractTitleId(g.fileName)?.id) || 'Unknown';
+
     const libraryPool = [];
     localGames.forEach(g => {
       libraryPool.push({
         title: g.title,
-        ppsa: g.ppsa || 'Unknown',
+        ppsa: resolveId(g),
         region: 'Local Library',
         source: 'Local'
       });
@@ -107,7 +112,7 @@ async function dupeCommand(query) {
       if (!libraryPool.some(p => p.title === g.title)) {
         libraryPool.push({
           title: g.title,
-          ppsa: g.ppsa || 'Unknown',
+          ppsa: resolveId(g),
           region: g.region || 'Unknown',
           source: 'Downloaded'
         });
@@ -169,19 +174,18 @@ async function dupeCommand(query) {
 
       if (choice > 0 && choice <= suggestions.length) {
         const selected = suggestions[choice - 1];
-        // Parse PPSA from webGame url if possible, otherwise use local game's PPSA
-        const ppsaMatch = webGame.url.match(/ppsa\d{5}/i);
-        const parsedPpsa = ppsaMatch ? ppsaMatch[0].toUpperCase() : selected.ppsa;
+        // Record the parent game's ID so the dupe shows what it's a duplicate of.
+        const parentPpsa = selected.ppsa || 'Unknown';
 
         addDownloadedGame({
           title: webGame.title,
           fileName: 'Manual Entry (Dupe)',
-          ppsa: parsedPpsa,
+          ppsa: parentPpsa,
           password: '',
           source: 'Manual (Dupe)',
           region: selected.region
         });
-        logger.success(`Marked "${webGame.title}" as duplicate of "${selected.title}" (PPSA: ${parsedPpsa})`);
+        logger.success(`Marked "${webGame.title}" as duplicate of "${selected.title}" (ID: ${parentPpsa})`);
       } else {
         console.log(chalk.red('Invalid selection. Skipped.'));
       }

@@ -1,9 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 const { XMLParser } = require('fast-xml-parser');
-const { extractPPSA } = require('../utils/ppsaParser');
 const { normalizeTitle } = require('../utils/titleNormalizer');
 const { getCurrentPlatform } = require('./platformConfig');
+const { extractTitleId } = require('../utils/consoleClassifier');
 
 /**
  * Loads and parses the local LaunchBox XML library for the selected platform.
@@ -32,7 +32,11 @@ function loadLocalLibrary() {
   for (const pg of playlistGames) {
     const title = pg.GameTitle || '';
     const fileName = pg.GameFileName || '';
-    const ppsa = extractPPSA(fileName);
+    // Extract the title ID (CUSA/PPSA/SLUS/...) from the filename, preferring
+    // the active platform's console so PS4 games resolve their CUSA, not a
+    // co-listed PS5 id.
+    const idMatch = extractTitleId(fileName, { preferConsole: getCurrentPlatform().key });
+    const ppsa = idMatch ? idMatch.id : null;
     const lbId = pg.LaunchBoxDbId || '';
     const order = parseInt(pg.ManualOrder, 10) || 0;
 
