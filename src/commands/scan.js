@@ -86,10 +86,18 @@ async function scanCommand(query, options = {}) {
 
   let games;
   try {
-    if (limit !== null) {
-      // Top N of the *unscanned* TBD list (skipping games already scanned, so
-      // the cursor advances instead of re-hitting confirmed-PS4 titles).
-      const tbd = await buildTbdList(query);
+    if (query) {
+      // Explicit query: scan matching web games (any status). --limit caps count.
+      games = await findGameInWebList(query);
+      if (games.length === 0) {
+        logger.warn(`No games found matching: "${query}"`);
+        return;
+      }
+      if (limit !== null) games = games.slice(0, limit);
+    } else {
+      // No query: scan only the TBD list, skipping already-scanned games so the
+      // cursor advances. --limit caps to the top N; otherwise scan all remaining.
+      const tbd = await buildTbdList();
       if (tbd.length === 0) {
         logger.info('No TBD (To Be Downloaded) games to scan.');
         return;
@@ -101,16 +109,8 @@ async function scanCommand(query, options = {}) {
         logger.info(`All ${tbd.length} TBD game(s) already scanned. Use --refresh to re-scan or --reset to clear marks.`);
         return;
       }
-      games = unscanned.slice(0, limit);
-      logger.info(`TBD: ${tbd.length} | already scanned: ${alreadyScanned} | scanning next: ${games.length}`);
-    } else if (query) {
-      games = await findGameInWebList(query);
-      if (games.length === 0) {
-        logger.warn(`No games found matching: "${query}"`);
-        return;
-      }
-    } else {
-      games = await getWebGameList(!!options.refresh);
+      games = limit !== null ? unscanned.slice(0, limit) : unscanned;
+      logger.info(`TBD: ${tbd.length} | already scanned: ${alreadyScanned} | scanning: ${games.length}`);
     }
   } catch (err) {
     logger.error('Failed to load the game list.', err);

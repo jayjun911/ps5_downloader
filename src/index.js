@@ -86,7 +86,7 @@ program
 
 program
   .command('scan')
-  .argument('[name]', 'Game name to scan (partial match). Omit to scan the entire PS4 list.')
+  .argument('[name]', 'Game name to scan (partial match). Omit to scan the TBD list.')
   .option('-l, --limit <number>', 'Scan only the top N games from the TBD list')
   .option('-d, --delay <ms>', 'Throttle: delay before each network fetch in ms (default 1500, jittered; 0 to disable)')
   .option('-r, --refresh', 'Force re-scrape subpages instead of using cached data (re-scans already-scanned games)')
