@@ -56,7 +56,7 @@ class PS4Platform extends BasePlatform {
         gameKnownPassword = gameInfo.workingPassword || '';
         checkSpinner.succeed(`Read metadata: ${finalTitle} [${finalPpsa}] ${finalVer}`);
       } catch (err) {
-        checkSpinner.warn(`Failed to read param.json: ${err.message}. Using fallback metadata.`);
+        checkSpinner.stop();
       }
     }
 
