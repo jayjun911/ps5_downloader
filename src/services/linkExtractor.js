@@ -611,7 +611,8 @@ async function getBestDownloadLinks(sections, targetPPSA, { skipHosts = [], forc
     }
   }
 
-  throw new Error(`Failed to extract any download links for PPSA: ${targetPPSA}`);
+  const ppsaStr = targetPPSA ? ` for PPSA: ${targetPPSA}` : '';
+  throw new Error(`No valid download links found${ppsaStr} (links may be unsupported, dead, or rate-limited).`);
 }
 
 module.exports = {

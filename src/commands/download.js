@@ -494,7 +494,15 @@ async function downloadCommand(titleQuery, options = {}) {
             console.log(chalk.bold.magenta(`\n=== [${slotNum}/${count}] Starting: ${game.title} ===`));
             markProgress(game.normalizedTitle);
             downloadSingleGame(game, options)
-              .catch(e => { logger.error(`Skipping "${game.title}": ${e.message}`); })
+              .catch(e => {
+                logger.error(`Skipping "${game.title}": ${e.message}`);
+                if (options.interactive) {
+                  try {
+                    logger.info(`Opening game page for manual inspection: ${game.url}`);
+                    open(game.url);
+                  } catch (err) {}
+                }
+              })
               .finally(() => {
                 clearProgress(game.normalizedTitle);
                 active--;
