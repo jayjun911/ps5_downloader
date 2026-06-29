@@ -210,7 +210,7 @@ async function downloadSingleGame(game, options = {}) {
           }
         }
 
-        spinner.info(`Matched Section: Region [${bestLinks.region}], PPSA [${bestLinks.ppsa || targetPPSA || 'Unknown'}], Host [${bestLinks.hostName}]`);
+        spinner.info(`Matched Section: section [${bestLinks.region}], GameID [${bestLinks.ppsa || targetPPSA || 'Unknown'}], Host [${bestLinks.hostName}]`);
         if (targetType) {
           logger.info(`Filtering downloads for type "${targetType}" (${bestLinks.urls.length} files matched)`);
         }

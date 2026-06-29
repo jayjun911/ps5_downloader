@@ -45,7 +45,7 @@ class PS5Platform extends BasePlatform {
             }
           }
         } catch (e) {}
-        const exfatErr = new Error(`exFAT download failed (region [${sectionRegion}]): ${err.message}`);
+        const exfatErr = new Error(`exFAT download failed (section [${sectionRegion}]): ${err.message}`);
         exfatErr.isHandled = true;
         throw exfatErr;
       }
@@ -61,7 +61,7 @@ class PS5Platform extends BasePlatform {
           }
         }
       } catch (e) {}
-      const exfatErr = new Error(`exFAT download failed (region [${sectionRegion}]): ${err.message}`);
+      const exfatErr = new Error(`exFAT download failed (section [${sectionRegion}]): ${err.message}`);
       exfatErr.isHandled = true;
       throw exfatErr;
     }
