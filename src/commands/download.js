@@ -181,13 +181,14 @@ async function downloadSingleGame(game, options = {}) {
 
       const sectionConsole = section.console || (classifyId(section.ppsa) || {}).console || activeConsole;
       const platform = getPlatformHandler(sectionConsole);
-      const regionInfo = `region [${section.region}], PPSA [${section.ppsa}]`;
+      const sectionLabel = section.region.replace(/\s*\(.*\)$/, '').trim();
+      const regionInfo = `section [${sectionLabel}], GameID [${section.ppsa}]`;
 
       // Inner loop: retry same section with next-best host when a link is dead
       const skipHosts = [];
       let sectionDone = false;
       while (!sectionDone) {
-      logger.info(`Analyzing [${i + 1}/${sections.length}]: ${section.ppsa} – ${section.region}`);
+      logger.info(`Analyzing [${i + 1}/${sections.length}]: GameID [${section.ppsa}] – section [${sectionLabel}]`);
       spinner.start();
 
       let currentHostName = null;
@@ -349,7 +350,7 @@ async function downloadSingleGame(game, options = {}) {
           if (!fallbackLinks) {
             fallbackLinks = bestLinks;
           }
-          spinner.info(`No auto-downloadable host for region [${section.region}] (best available: ${bestLinks.hostName}). Saving as browser fallback...`);
+          spinner.info(`No auto-downloadable host for section [${sectionLabel}] (best available: ${bestLinks.hostName}). Saving as browser fallback...`);
           sectionDone = true;
         }
       } catch (err) {
