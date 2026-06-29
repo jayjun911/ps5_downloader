@@ -106,4 +106,15 @@ program
     setPlatformCommand(platform);
   });
 
+program
+  .command('type')
+  .argument('[title]', 'Title of the game to manually set the console type')
+  .argument('[consoleType]', 'Console type to set (ps1, ps2, ps1-2, saturn, psp, other)')
+  .option('-r, --remove', 'Remove the manually set console type')
+  .description('Manually set or remove a console type (label) for a game')
+  .action((title, consoleType, options) => {
+    const typeCommand = require('./commands/type');
+    typeCommand(title, consoleType, options);
+  });
+
 program.parse(process.argv);

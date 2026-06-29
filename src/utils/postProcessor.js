@@ -3,6 +3,7 @@ const fs = require('fs');
 const ora = require('ora');
 const { archiveContainsExfat, extractRarArchive, getGameInfoFromArchive, compressFolderTo7z, compressFileTo7z, findShallowestEbootDir, findWorkingPassword, sanitizeFileName } = require('../services/unrarService');
 const { addDownloadedGame } = require('../services/downloadedDb');
+const { classifyId } = require('./consoleClassifier');
 const logger = require('./logger');
 
 // ── File-type helpers ──────────────────────────────────────────────────────────
@@ -56,6 +57,21 @@ function getUniqueFilePath(dir, baseName, ext, currentFilePath = null) {
     counter++;
   }
   return path.join(dir, `${baseName}_${counter}${ext}`);
+}
+
+function findFilesWithExt(dir, ext) {
+  let results = [];
+  const list = fs.readdirSync(dir);
+  for (const file of list) {
+    const filePath = path.join(dir, file);
+    const stat = fs.statSync(filePath);
+    if (stat.isDirectory()) {
+      results = results.concat(findFilesWithExt(filePath, ext));
+    } else if (file.toLowerCase().endsWith(ext.toLowerCase())) {
+      results.push(filePath);
+    }
+  }
+  return results;
 }
 
 // ── exFAT helpers ─────────────────────────────────────────────────────────────
@@ -434,6 +450,9 @@ async function processDownloadedFiles({
     }
   }
 
+  const consoleClass = classifyId(finalPpsa);
+  const isPkgFormat = consoleClass && consoleClass.console !== 'ps5';
+
   const registeredFiles = [];
 
   // ── Generic archive processor (non-exFAT path) ────────────────────────────
@@ -455,9 +474,10 @@ async function processDownloadedFiles({
 
     const isSplit    = checkIsSplitArchive(archiveSet);
     const encrypted  = workingPassword !== '';
+    const forceExtract = encrypted || isSplit || isPkgFormat || groupType === 'DLC';
 
-    if (encrypted || isSplit) {
-      const extractSpinner = ora(`[${groupType}] Extracting "${mainFileName}" (encrypted/split)...`).start();
+    if (forceExtract) {
+      const extractSpinner = ora(`[${groupType}] Extracting "${mainFileName}"${encrypted || isSplit ? ' (encrypted/split)' : ''}...`).start();
       const outputFolderPath = path.join(downloadDir, baseNameLabel);
       try {
         await extractRarArchive(mainFilePath, outputFolderPath, workingPassword);
@@ -475,19 +495,39 @@ async function processDownloadedFiles({
         }
         deleteSpinner.succeed(`[${groupType}] Cleaned up.`);
 
-        const dest7zPath   = path.join(downloadDir, `${baseNameLabel}.7z`);
-        const compressSpinner = ora(`[${groupType}] Recompressing to ${baseNameLabel}.7z...`).start();
-        // Compress from the shallowest eboot.bin folder so wrapper folders are
-        // stripped from the archive. Read-only: nothing on disk is moved.
-        const compressRoot = findShallowestEbootDir(outputFolderPath) || outputFolderPath;
-        await compressFolderTo7z(compressRoot, dest7zPath);
-        if (!fs.existsSync(dest7zPath) || fs.statSync(dest7zPath).size === 0) {
-          throw new Error(`Recompressed 7z is empty: ${dest7zPath}`);
-        }
-        compressSpinner.succeed(`[${groupType}] Recompressed: ${baseNameLabel}.7z`);
-        registeredFiles.push({ fileName: `${baseNameLabel}.7z`, type: groupType });
+        if (groupType === 'DLC') {
+          logger.success(`[${groupType}] Extracted DLC package(s) to folder: ${baseNameLabel}`);
+          registeredFiles.push({ fileName: baseNameLabel, type: groupType });
+        } else if (isPkgFormat) {
+          const pkgFiles = findFilesWithExt(outputFolderPath, '.pkg');
+          if (pkgFiles.length > 0) {
+            for (let idx = 0; idx < pkgFiles.length; idx++) {
+              const pkgPath = pkgFiles[idx];
+              const newPkgName = pkgFiles.length === 1 ? `${baseNameLabel}.pkg` : `${baseNameLabel}_${idx + 1}.pkg`;
+              const newPkgPath = getUniqueFilePath(downloadDir, path.parse(newPkgName).name, '.pkg');
+              fs.renameSync(pkgPath, newPkgPath);
+              registeredFiles.push({ fileName: path.basename(newPkgPath), type: groupType });
+              logger.success(`[${groupType}] Extracted package: ${path.basename(newPkgPath)}`);
+            }
+          } else {
+             logger.warn(`[${groupType}] No .pkg files found after extraction. Keeping extracted folder.`);
+          }
+          try { fs.rmSync(outputFolderPath, { recursive: true, force: true }); } catch (e) { /* ignore */ }
+        } else {
+          const dest7zPath   = path.join(downloadDir, `${baseNameLabel}.7z`);
+          const compressSpinner = ora(`[${groupType}] Recompressing to ${baseNameLabel}.7z...`).start();
+          // Compress from the shallowest eboot.bin folder so wrapper folders are
+          // stripped from the archive. Read-only: nothing on disk is moved.
+          const compressRoot = findShallowestEbootDir(outputFolderPath) || outputFolderPath;
+          await compressFolderTo7z(compressRoot, dest7zPath);
+          if (!fs.existsSync(dest7zPath) || fs.statSync(dest7zPath).size === 0) {
+            throw new Error(`Recompressed 7z is empty: ${dest7zPath}`);
+          }
+          compressSpinner.succeed(`[${groupType}] Recompressed: ${baseNameLabel}.7z`);
+          registeredFiles.push({ fileName: `${baseNameLabel}.7z`, type: groupType });
 
-        try { fs.rmSync(outputFolderPath, { recursive: true, force: true }); } catch (e) { /* ignore */ }
+          try { fs.rmSync(outputFolderPath, { recursive: true, force: true }); } catch (e) { /* ignore */ }
+        }
       } catch (extErr) {
         const isPasswordError = extErr.status === 11;
         const userMsg = isPasswordError
@@ -639,14 +679,35 @@ async function processDownloadedFiles({
         }
       } else {
         const currentPath = path.join(downloadDir, file);
-        const newPath     = getUniqueFilePath(downloadDir, baseName, ext, currentPath);
-        const newFileName = path.basename(newPath);
+        let targetDir = downloadDir;
+        let finalFileName = null;
+        
+        if (type === 'DLC') {
+          targetDir = path.join(downloadDir, baseName);
+          if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+          // Keep original name for DLCs to preserve identifying information
+          const uniquePath = getUniqueFilePath(targetDir, path.parse(file).name, ext, currentPath);
+          finalFileName = path.basename(uniquePath);
+        } else {
+          const uniquePath = getUniqueFilePath(targetDir, baseName, ext, currentPath);
+          finalFileName = path.basename(uniquePath);
+        }
+        
+        const newPath = path.join(targetDir, finalFileName);
+        
         try {
           if (path.resolve(currentPath) !== path.resolve(newPath)) {
             fs.renameSync(currentPath, newPath);
-            logger.info(`Renamed: ${file} → ${newFileName}`);
+            logger.info(`Moved/Renamed: ${file} → ${type === 'DLC' ? baseName + '/' : ''}${finalFileName}`);
           }
-          registeredFiles.push({ fileName: newFileName, type });
+          
+          if (type === 'DLC') {
+            if (!registeredFiles.find(r => r.fileName === baseName && r.type === type)) {
+              registeredFiles.push({ fileName: baseName, type });
+            }
+          } else {
+            registeredFiles.push({ fileName: finalFileName, type });
+          }
         } catch (renameErr) {
           logger.warn(`Rename failed for "${file}": ${renameErr.message}`);
           registeredFiles.push({ fileName: file, type });
