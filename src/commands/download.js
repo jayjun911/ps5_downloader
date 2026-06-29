@@ -85,7 +85,7 @@ function detectFileType(fileName) {
 async function downloadSingleGame(game, options = {}) {
   const spinner = ora(`Scraping subpage for "${game.title}"...`).start();
   try {
-    const sections = await getGameSubpageData(game.slug, game.url);
+    const { sections, languages } = await getGameSubpageData(game.slug, game.url);
     if (sections.length === 0) {
       throw new Error('No download sections found on game subpage.');
     }
@@ -117,7 +117,8 @@ async function downloadSingleGame(game, options = {}) {
       const isJpnOnly = sections.length > 0 && sections.every(s =>
         /JPN|JAPAN/i.test(s.region)
       );
-      if (isJpnOnly) {
+      const hasEnOrKo = languages.some(l => /\b(english|korean|en|ko)\b/i.test(l));
+      if (isJpnOnly && !hasEnOrKo) {
         setLabel(game.title, 'jpn', null);
         spinner.stop();
         logger.warn(`"${game.title}" has only Japanese sections. Marked as [JPN] and skipping.`);

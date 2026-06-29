@@ -141,7 +141,7 @@ async function scanCommand(query, options = {}) {
 
     const spinner = ora(`[${i + 1}/${games.length}] ${g.title}`).start();
     try {
-      const sections = await getGameSubpageData(g.slug, g.url, !!options.refresh);
+      const { sections, languages } = await getGameSubpageData(g.slug, g.url, !!options.refresh);
       const detected = sections
         .map(s => {
           const console = s.console || (classifyId(s.ppsa) || {}).console;
@@ -153,7 +153,8 @@ async function scanCommand(query, options = {}) {
       const isJpnOnly = sections.length > 0 && sections.every(s =>
         /JPN|JAPAN/i.test(s.region)
       );
-      if (isJpnOnly) {
+      const hasEnOrKo = languages.some(l => /\b(english|korean|en|ko)\b/i.test(l));
+      if (isJpnOnly && !hasEnOrKo) {
         setLabel(g.title, 'jpn', null);
         labeled++;
         spinner.succeed(`${g.title} → ${chalk.cyan('[JPN]')} (Japan-only sections)`);

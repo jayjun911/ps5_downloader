@@ -254,7 +254,11 @@ async function getGameSubpageData(slug, url, forceRefresh = false) {
       try {
         const cachedContent = fs.readFileSync(cachePath, 'utf-8');
         const parsed = JSON.parse(cachedContent);
+        // Support old array format and new { sections, languages } format
         if (Array.isArray(parsed) && parsed.length > 0) {
+          return { sections: parsed, languages: [] };
+        }
+        if (parsed && Array.isArray(parsed.sections) && parsed.sections.length > 0) {
           return parsed;
         }
       } catch (e) {
@@ -450,11 +454,26 @@ To bypass this block, please follow these steps:
     }
   });
 
+  // Parse "Languages : Japanese, English" from the post body
+  const languages = [];
+  $('.post-body.entry-content p, .post-body.entry-content li').each((_, el) => {
+    const txt = $(el).text().trim();
+    const m = txt.match(/^Languages?\s*[:：]\s*(.+)/i);
+    if (m) {
+      m[1].split(/[,\/]/).forEach(lang => {
+        const l = lang.trim();
+        if (l) languages.push(l);
+      });
+      return false; // found — stop iterating
+    }
+  });
+
+  const result = { sections, languages };
   if (sections.length > 0) {
     ensureDirectoryExistence(cachePath);
-    fs.writeFileSync(cachePath, JSON.stringify(sections, null, 2), 'utf-8');
+    fs.writeFileSync(cachePath, JSON.stringify(result, null, 2), 'utf-8');
   }
-  return sections;
+  return result;
 }
 
 /**
