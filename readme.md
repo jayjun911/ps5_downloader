@@ -131,6 +131,9 @@ dlps download "Game Title" --password "custom_password"
 
 # Mark as completed without downloading
 dlps download "Game Title" --completed
+
+# Open game page in browser when a download fails (for manual inspection)
+dlps download --limit 10 --interactive
 ```
 
 **Batch + FDM mode:** When `DOWNLOAD_MANAGER` is set, `--limit` runs `DOWNLOADER_PARALLEL_GAME_PARSING` games concurrently using a rolling window — as soon as one game finishes, the next starts immediately.
@@ -189,14 +192,14 @@ dlps open "After The Fall"
 
 ## 5. Download & Post-processing Pipeline
 
-### Region Priority
+### Section Priority
 Sections are tried in this order: **KOR (exFAT) → KOR → USA (exFAT) → EUR (exFAT) → USA → EUR → Other**
 
 ### Backport Filtering
 For each section, the tool checks the content for `"Works on X.xx and higher"` notes:
 - Required firmware ≤ `USER_FIRMWARE` → compatible, use this section
 - Required firmware > `USER_FIRMWARE` → incompatible, skip to next section
-- No note found → fall back to region-name heuristic
+- No note found → fall back to section-name heuristic
 
 **Example** (`USER_FIRMWARE=7`):
 - Section: `"Works on 9.xx and higher"` → skip
@@ -215,13 +218,13 @@ For each section, the tool checks the content for `"Works on X.xx and higher"` n
 ### Post-processing Flow
 
 #### Standard regions (non-exFAT)
-1. **Metadata**: Lists the archive to locate `param.json`'s exact internal path, then extracts only that file to read real `titleName`, `PPSA`, `version`. Archives containing thousands of files (large listings) are handled correctly. The version is taken from `contentVersion` (`NN.NNN.NNN`); a trailing all-zero patch segment is dropped (`01.210.000` → `v01.210`, while `01.000.004` is kept as-is).
+1. **Metadata**: Lists the archive to locate `param.json`'s exact internal path, then extracts only that file to read real `titleName`, `GameID`, `version`. Archives containing thousands of files (large listings) are handled correctly. The version is taken from `contentVersion` (`NN.NNN.NNN`); a trailing all-zero patch segment is dropped (`01.210.000` → `v01.210`, while `01.000.004` is kept as-is).
 2. **Password detection**: Tests with no password, then tries `DLPSGAME.COM`, `dlpsgame.com`, and any scraped password.
 3. **If encrypted or split**:
    - Extract with UnRAR/7z
    - Delete original archive(s)
    - Recompress with Bandizip: `bz a -r -fmt:7z -l:7 "output.7z"`
-4. **If not encrypted**: Rename to `{Title} [PPSA][vXX.XX]{ext}` and keep as-is.
+4. **If not encrypted**: Rename to `{Title} [GameID][vXX.XX]{ext}` and keep as-is.
 5. **Registration**: Records the final filename in `data/downloaded.xml`.
 
 #### exFAT regions
@@ -243,12 +246,12 @@ exFAT disk images contain the PS5 filesystem directly. `param.json` is inside th
 ### Final File Naming
 | Scenario | Result |
 |----------|--------|
-| Encrypted/split archive | `{Title} [PPSA][ver].7z` |
-| Clean archive (no password) | `{Title} [PPSA][ver]{.rar/.zip/.7z}` |
-| exFAT (encrypted archive) | `{Title} [PPSA][ver].7z` |
-| exFAT (non-encrypted archive) | `{Title} [PPSA][ver].rar` |
-| exFAT raw image | `{Title} [PPSA][ver].7z` |
-| DLC, UNLOCK, UPDATE | `{Title} [PPSA][TYPE]{ext}` |
+| Encrypted/split archive | `{Title} [GameID][ver].7z` |
+| Clean archive (no password) | `{Title} [GameID][ver]{.rar/.zip/.7z}` |
+| exFAT (encrypted archive) | `{Title} [GameID][ver].7z` |
+| exFAT (non-encrypted archive) | `{Title} [GameID][ver].rar` |
+| exFAT raw image | `{Title} [GameID][ver].7z` |
+| DLC, UNLOCK, UPDATE | `{Title} [GameID][TYPE]{ext}` |
 | Failed exFAT download | `original_name.failed` |
 
 ---
@@ -382,6 +385,9 @@ dlps download "Game Title" --password "custom_password"
 
 # 실제 다운로드 없이 완료로 등록
 dlps download "Game Title" --completed
+
+# 실패 시 브라우저로 게임 페이지 열기 (수동 확인용)
+dlps download --limit 10 --interactive
 ```
 
 **배치 + FDM 모드:** `DOWNLOAD_MANAGER` 설정 시 `--limit`는 `DOWNLOADER_PARALLEL_GAME_PARSING`개 게임을 동시에 rolling window 방식으로 처리합니다. 한 게임이 완료되면 즉시 다음 게임이 시작됩니다.
@@ -440,14 +446,14 @@ dlps open "After The Fall"
 
 ## 5. 다운로드 및 후처리 프로세스 흐름
 
-### 지역 우선순위
+### 섹션 우선순위
 섹션 시도 순서: **KOR (exFAT) → KOR → USA (exFAT) → EUR (exFAT) → USA → EUR → 기타**
 
 ### 백포트 필터링
 각 섹션의 본문에서 `"Works on X.xx and higher"` 노트를 파싱합니다:
 - 요구 펌웨어 ≤ `USER_FIRMWARE` → 호환 → 해당 섹션 사용
 - 요구 펌웨어 > `USER_FIRMWARE` → 비호환 → 다음 섹션으로 skip
-- 노트 없음 → region 이름 기반 fallback 로직 적용
+- 노트 없음 → section 이름 기반 fallback 로직 적용
 
 **예시** (`USER_FIRMWARE=7`):
 - 섹션 `"Works on 9.xx and higher"` → skip
@@ -465,17 +471,17 @@ dlps open "After The Fall"
 
 ### 후처리 흐름
 
-#### 일반 리전 (non-exFAT)
-1. **메타데이터**: 아카이브를 listing하여 `param.json`의 정확한 내부 경로를 찾은 뒤 해당 파일만 추출해 실제 타이틀·PPSA·버전 파싱. 파일이 수천 개인 대형 아카이브(listing 출력 대용량)도 정상 처리. 버전은 `contentVersion`(`NN.NNN.NNN`)에서 도출하며 후행 `.000` 패치 세그먼트는 드롭(`01.210.000` → `v01.210`, `01.000.004`는 그대로 유지)
+#### 일반 섹션 (non-exFAT)
+1. **메타데이터**: 아카이브를 listing하여 `param.json`의 정확한 내부 경로를 찾은 뒤 해당 파일만 추출해 실제 타이틀·GameID·버전 파싱. 파일이 수천 개인 대형 아카이브(listing 출력 대용량)도 정상 처리. 버전은 `contentVersion`(`NN.NNN.NNN`)에서 도출하며 후행 `.000` 패치 세그먼트는 드롭(`01.210.000` → `v01.210`, `01.000.004`는 그대로 유지)
 2. **비밀번호 감지**: 비밀번호 없이 시도 → `DLPSGAME.COM` → `dlpsgame.com` → 스크랩 비밀번호 순차 대입
 3. **암호화·분할 압축인 경우**:
    - UnRAR/7z로 추출
    - 원본 아카이브 삭제
    - Bandizip으로 재압축: `bz a -r -fmt:7z -l:7 "output.7z"`
-4. **비암호화인 경우**: `{Title} [PPSA][vXX.XX]{ext}` 포맷으로 리네임 보존
+4. **비암호화인 경우**: `{Title} [GameID][vXX.XX]{ext}` 포맷으로 리네임 보존
 5. **등록**: `data/downloaded.xml`에 최종 파일명 기록
 
-#### exFAT 리전
+#### exFAT 섹션
 exFAT 디스크 이미지는 PS5 파일시스템을 직접 포함합니다. `param.json`이 이미지 내부에 있으므로 아카이브 검사 대신 OSFMount를 사용합니다.
 
 **아카이브 경로** (`.exfat`를 감싼 `.rar`/`.zip`):
@@ -495,10 +501,10 @@ exFAT 디스크 이미지는 PS5 파일시스템을 직접 포함합니다. `par
 
 | 상황 | 결과물 |
 |------|--------|
-| 암호화·분할 압축 아카이브 | `{Title} [PPSA][ver].7z` |
-| 무암호 아카이브 | `{Title} [PPSA][ver]{.rar/.zip/.7z}` |
-| exFAT (암호화 아카이브) | `{Title} [PPSA][ver].7z` |
-| exFAT (무암호 아카이브) | `{Title} [PPSA][ver].rar` |
-| exFAT raw 이미지 | `{Title} [PPSA][ver].7z` |
-| DLC, UNLOCK, UPDATE | `{Title} [PPSA][TYPE]{ext}` |
+| 암호화·분할 압축 아카이브 | `{Title} [GameID][ver].7z` |
+| 무암호 아카이브 | `{Title} [GameID][ver]{.rar/.zip/.7z}` |
+| exFAT (암호화 아카이브) | `{Title} [GameID][ver].7z` |
+| exFAT (무암호 아카이브) | `{Title} [GameID][ver].rar` |
+| exFAT raw 이미지 | `{Title} [GameID][ver].7z` |
+| DLC, UNLOCK, UPDATE | `{Title} [GameID][TYPE]{ext}` |
 | exFAT 다운로드 실패 | `original_name.failed` |
