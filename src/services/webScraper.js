@@ -400,8 +400,17 @@ To bypass this block, please follow these steps:
         }
       }
       if (base64Payload) {
-        // Avoid duplicate additions
-        if (sections.some(s => s.base64Payload === base64Payload)) {
+        // If already added by the paragraph-based path, check if the payload
+        // contains an emu tag (e.g. [SATURNtoPS4]) and backfill console field.
+        const existing = sections.find(s => s.base64Payload === base64Payload);
+        if (existing) {
+          if (!existing.console) {
+            try {
+              const decodedText = Buffer.from(base64Payload, 'base64').toString('utf-8');
+              const emuConsole = detectEmuConsole(decodedText);
+              if (emuConsole) existing.console = emuConsole;
+            } catch (e) {}
+          }
           return;
         }
 
