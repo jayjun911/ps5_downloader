@@ -404,12 +404,10 @@ async function downloadSingleGame(game, options = {}) {
     if (!success) {
       if (fallbackLinks) {
         if (options.interactive) {
-          spinner.warn(`No auto-downloadable host found in any section. Opening browser fallback for [${fallbackLinks.region}] (${fallbackLinks.hostName})...`);
-          for (const url of fallbackLinks.urls) {
-            await open(url);
-          }
+          spinner.warn(`No auto-downloadable host found in any section. Opening game page for manual download...`);
+          await open(game.url);
         } else {
-          spinner.warn(`No auto-downloadable host found in any section. Use -i to open browser fallback for [${fallbackLinks.region}] (${fallbackLinks.hostName}).`);
+          spinner.warn(`No auto-downloadable host found in any section. Use -i to open the game page for manual download.`);
         }
         logFailure(game.title, game.url, `No 1fichier links. Host: ${fallbackLinks.hostName}. Opened browser fallback.`);
       } else {
