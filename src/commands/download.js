@@ -10,6 +10,7 @@ const { getUniqueFilePath } = require('../utils/postProcessor');
 const { loadProgressSet, markProgress, clearProgress } = require('../services/progressDb');
 const { platformDataPath, getCurrentPlatformKey } = require('../services/platformConfig');
 const { setLabel } = require('../services/labelDb');
+const { addPending } = require('../services/pendingDb');
 const { classifyId, consoleLabel, detectEmuConsole } = require('../utils/consoleClassifier');
 const logger = require('../utils/logger');
 const open = require('open');
@@ -84,6 +85,7 @@ function detectFileType(fileName) {
  */
 async function downloadSingleGame(game, options = {}) {
   const spinner = ora(`Scraping subpage for "${game.title}"...`).start();
+  let bestKnownPpsa = 'Unknown';
   try {
     const { sections, languages } = await getGameSubpageData(game.slug, game.url);
     if (sections.length === 0) {
@@ -111,7 +113,7 @@ async function downloadSingleGame(game, options = {}) {
           `${other.id ? ` (${other.id})` : ''}, not ${activeConsole.toUpperCase()}. ` +
           `Marked as [${consoleLabel(other.console)}] and skipping.`
         );
-        return;
+        return 'skipped';
       }
 
       const isJpnOnly = sections.length > 0 && sections.every(s =>
@@ -122,7 +124,7 @@ async function downloadSingleGame(game, options = {}) {
         setLabel(game.title, 'jpn', null);
         spinner.stop();
         logger.warn(`"${game.title}" has only Japanese sections. Marked as [JPN] and skipping.`);
-        return;
+        return 'skipped';
       }
     }
 
@@ -130,6 +132,9 @@ async function downloadSingleGame(game, options = {}) {
     const localGames = loadLocalLibrary();
     const localMatch = localGames.find(lg => lg.normalizedTitle === game.normalizedTitle);
     const targetPPSA = localMatch ? localMatch.ppsa : null;
+
+    // Best-effort PPSA for the pending-manual queue (used by `completed --pending`).
+    bestKnownPpsa = targetPPSA || (sections.find(s => s.ppsa) || {}).ppsa || 'Unknown';
 
     // --section: interactively pick a section
     if (options.section) {
@@ -406,6 +411,7 @@ async function downloadSingleGame(game, options = {}) {
         if (options.interactive) {
           spinner.warn(`No auto-downloadable host found in any section. Opening game page for manual download...`);
           await open(game.url);
+          addPending({ title: game.title, url: game.url, ppsa: bestKnownPpsa });
         } else {
           spinner.warn(`No auto-downloadable host found in any section. Use -i to open the game page for manual download.`);
         }
@@ -415,11 +421,18 @@ async function downloadSingleGame(game, options = {}) {
       }
     }
 
+    return success ? 'downloaded' : 'manual';
+
   } catch (err) {
     if (!err.isUserError && !err.isHandled) {
       spinner.fail(`Download failed for "${game.title}": ${err.message}`);
       logFailure(game.title, game.url, err.message);
       err.isHandled = true;
+    }
+    // The batch handler opens this game's page in the browser under -i; queue it
+    // so it can later be batch-marked via `completed --pending`.
+    if (options.interactive) {
+      addPending({ title: game.title, url: game.url, ppsa: bestKnownPpsa });
     }
     throw err;
   }
@@ -500,6 +513,9 @@ async function downloadCommand(titleQuery, options = {}) {
       // Rolling window: as soon as one game finishes, the next starts immediately
       let nextIdx = 0;
       let active = 0;
+      let downloadedCount = 0;
+      let failedCount = 0;
+      let skippedCount = 0;
       await new Promise((resolveAll) => {
         function startNext() {
           while (active < maxConcurrentGames && nextIdx < count) {
@@ -510,7 +526,13 @@ async function downloadCommand(titleQuery, options = {}) {
             console.log(chalk.bold.magenta(`\n=== [${slotNum}/${count}] Starting: ${game.title} ===`));
             markProgress(game.normalizedTitle);
             downloadSingleGame(game, options)
+              .then(status => {
+                if (status === 'downloaded') downloadedCount++;
+                else if (status === 'skipped') skippedCount++;
+                else failedCount++; // 'manual' (browser fallback) — not downloaded
+              })
               .catch(e => {
+                failedCount++;
                 logger.error(`Skipping "${game.title}": ${e.message}`);
                 if (options.interactive) {
                   try {
@@ -532,7 +554,18 @@ async function downloadCommand(titleQuery, options = {}) {
         }
         startNext();
       });
+
       logger.success('\nBatch download job finished.');
+      const parts = [`${chalk.green(downloadedCount)} downloaded`, `${chalk.red(failedCount)} failed`];
+      if (skippedCount > 0) parts.push(`${chalk.gray(skippedCount)} skipped/labeled`);
+      logger.info(`Result: ${parts.join(', ')}.`);
+      if (failedCount > 0) {
+        if (options.interactive) {
+          logger.info(`Manual pages opened. After downloading, run \`dlps completed --pending\` to mark them done.`);
+        } else {
+          logger.info(`Re-run \`dlps download -l ${failedCount} -i\` to open the failed ${failedCount} game(s) for manual download.`);
+        }
+      }
       return;
     }
 

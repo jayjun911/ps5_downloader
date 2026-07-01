@@ -1,11 +1,128 @@
 const { findGameInWebList } = require('../services/webScraper');
 const { addDownloadedGame, loadDownloadedGames } = require('../services/downloadedDb');
+const { loadPending, removePending } = require('../services/pendingDb');
 const { platformDataPath } = require('../services/platformConfig');
 const logger = require('../utils/logger');
 const readline = require('readline');
 const chalk = require('chalk');
 const path = require('path');
 const fs = require('fs');
+
+/**
+ * Resolves the active download directory (mirrors download command).
+ */
+function getDownloadDir() {
+  return process.env.DOWNLOAD_DIR || path.join(__dirname, '../../downloads');
+}
+
+/**
+ * Returns a Set of lowercased entry names in the download directory (shallow).
+ */
+function listDownloadDirNames() {
+  const dir = getDownloadDir();
+  try {
+    return fs.readdirSync(dir).map(n => n.toLowerCase());
+  } catch (e) {
+    return [];
+  }
+}
+
+/**
+ * A pending game counts as downloaded when a GAME-type file for its PPSA is
+ * present in the download dir. GAME files carry the "[Game]" tag in their name
+ * (the user's renamer convention); DLC/UPDATE/PATCH files don't.
+ */
+function findGameFile(names, ppsa) {
+  if (!ppsa || ppsa === 'Unknown') return null;
+  const id = ppsa.toLowerCase();
+  return names.find(n => n.includes(id) && n.includes('[game]')) || null;
+}
+
+/**
+ * Parses a number-selection string like "3 5" or "1-4, 7" into a 0-based index Set.
+ */
+function parseSelection(input, max) {
+  const picked = new Set();
+  for (const tok of input.split(/[\s,]+/).filter(Boolean)) {
+    const range = tok.match(/^(\d+)-(\d+)$/);
+    if (range) {
+      let a = parseInt(range[1], 10), b = parseInt(range[2], 10);
+      if (a > b) [a, b] = [b, a];
+      for (let n = a; n <= b; n++) if (n >= 1 && n <= max) picked.add(n - 1);
+    } else if (/^\d+$/.test(tok)) {
+      const n = parseInt(tok, 10);
+      if (n >= 1 && n <= max) picked.add(n - 1);
+    }
+  }
+  return picked;
+}
+
+/**
+ * Batch-marks pending manual downloads (download -i) as completed.
+ * Auto-detects which ones have their GAME file present, then lets the user add
+ * any stragglers by number before committing.
+ */
+async function handlePending() {
+  const pending = loadPending();
+  if (pending.length === 0) {
+    logger.info('No pending manual downloads. (Run `dlps download -l N -i` first.)');
+    return;
+  }
+
+  const names = listDownloadDirNames();
+  const rows = pending.map(p => ({
+    entry: p,
+    file: findGameFile(names, p.ppsa),
+  }));
+
+  console.log(chalk.cyan(`\nPending manual downloads (${rows.length}):`));
+  rows.forEach((r, idx) => {
+    const mark = r.file ? chalk.green('✓') : chalk.gray('·');
+    const ppsa = chalk.gray(`[${r.entry.ppsa}]`);
+    const found = r.file ? chalk.green(' (file found)') : '';
+    console.log(`  ${mark} [${String(idx + 1).padStart(2, '0')}] ${r.entry.title} ${ppsa}${found}`);
+  });
+
+  const detectedCount = rows.filter(r => r.file).length;
+  console.log(
+    chalk.gray(`\n✓ = GAME file found in ${getDownloadDir()} (auto-selected: ${detectedCount}).`)
+  );
+
+  const answer = await new Promise(resolve => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(
+      chalk.cyan('Add any extra numbers to mark completed (e.g. "3 5"), or press Enter to confirm: '),
+      ans => { rl.close(); resolve(ans.trim()); }
+    );
+  });
+
+  const selected = new Set(rows.map((r, i) => (r.file ? i : -1)).filter(i => i >= 0));
+  for (const i of parseSelection(answer, rows.length)) selected.add(i);
+
+  if (selected.size === 0) {
+    logger.info('Nothing selected. No changes made.');
+    return;
+  }
+
+  const doneTitles = [];
+  for (const i of selected) {
+    const { entry, file } = rows[i];
+    addDownloadedGame({
+      title: entry.title,
+      fileName: file ? file : 'Manual Entry',
+      ppsa: entry.ppsa || 'Unknown',
+      password: '',
+      source: 'Manual',
+      region: 'Unknown',
+    });
+    doneTitles.push(entry.normalizedTitle);
+    logger.success(`Marked completed: "${entry.title}" (${entry.ppsa})`);
+  }
+
+  removePending(doneTitles);
+  const remaining = pending.length - doneTitles.length;
+  logger.info(`${doneTitles.length} marked completed. ${remaining} still pending.`);
+}
 
 // Per-platform downloaded library, e.g. data/downloaded-ps5.xml
 const DB_PATH = platformDataPath('downloaded', 'xml');
@@ -62,6 +179,11 @@ function removeDownloadedGame(title) {
  */
 async function completedCommand(titleQuery, options = {}) {
   const isRemove = !!options.remove;
+
+  // Batch-complete games queued for manual download via `download -i`.
+  if (options.pending) {
+    return handlePending();
+  }
 
   // If no query is provided, print the list of currently completed games
   if (!titleQuery) {
